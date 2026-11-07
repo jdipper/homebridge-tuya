@@ -15,16 +15,22 @@ Each room can have three independent weekly programmes: **Home**, **Away** and
 target temperature. A period continues until the next period; none of these
 profiles is a power on/off schedule.
 
-The Homebridge accessory **Heating Programmes** exposes two switches:
+The plugin exposes two separate HomeKit switch accessories:
 
-- **Home**: on selects Home, off selects Away.
-- **Holiday**: on selects Holiday regardless of household presence. Turning it off
+- **Heating Home**: on selects Home, off selects Away after the configured delay.
+- **Heating Holiday**: on selects Holiday regardless of household presence. Turning it off
   returns to the selected Home/Away state.
 
-Both switches belong to **Heating Programmes**. Their configured names are seeded
-individually; names chosen in Apple Home are preserved. Existing Home-app cached
-names may need refreshing or renaming there after an upgrade. The accessory and
-switch identifiers are unchanged, so existing automations keep their targets.
+Each accessory contains one switch, so Home and Holiday can be selected
+independently instead of relying on Apple Home's multi-switch accessory layout.
+Names chosen in Apple Home are preserved.
+
+When upgrading from the grouped **Heating Programmes** accessory, its identity
+and Home switch are retained so Home/Away automations keep their existing target.
+Holiday moves to a new **Heating Holiday** accessory; update any Holiday scenes
+or automations to select it. Apple Home may retain the old **Heating Programmes**
+name on the Home control; it can be renamed there. The migration publishes the
+replacement Holiday control before removing the old grouped Holiday service.
 
 Presence changes during Holiday are remembered. Turning Holiday off selects Home
 if anyone is home, or Away if everyone is out. Holiday can end manually or at an
@@ -45,8 +51,8 @@ An overdue timer after restart requires explicit recovery instead of replaying
 old commands. Unknown occupancy at Holiday return also requires review.
 
 Create Apple Home automations for the first person arriving and the last person
-leaving, setting **Heating Programmes → Home** on or off respectively. A scene or
-automation can turn **Heating Programmes → Holiday** on when leaving overnight, and off when
+leaving, setting **Heating Home** on or off respectively. A scene or
+automation can turn **Heating Holiday** on when leaving overnight, and off when
 returning. Presence detection belongs to Apple Home; the plugin receives only the
 resulting switch state, not anyone's location.
 

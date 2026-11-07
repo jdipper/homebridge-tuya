@@ -16,7 +16,7 @@ import { sanitizeName } from './util/util';
 import TuyaOpenAPI, { LOGIN_ERROR_MESSAGES } from './core/TuyaOpenAPI';
 import { initLogger } from './util/Logger';
 import ThermostatRuntime from './device/schedule/ThermostatRuntime';
-import ThermostatProfileAccessory from './accessory/ThermostatProfileAccessory';
+import ThermostatProfileAccessory, { configureThermostatProfileAccessories } from './accessory/ThermostatProfileAccessory';
 import { isFastWarmThermostat } from './device/profile/FastWarmThermostat';
 
 
@@ -37,7 +37,8 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
   public deviceManager?: TuyaDeviceManager;
   public accessoryHandlers: BaseAccessory[];
   public thermostatRuntime?: ThermostatRuntime;
-  private thermostatProfileAccessory?: ThermostatProfileAccessory;
+  private thermostatProfileAccessories: ThermostatProfileAccessory[] = [];
+  private thermostatProfileControllers: PlatformAccessory[] = [];
 
   validate() {
     let result;
@@ -236,29 +237,44 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
   private async initThermostatRuntime() {
     const manager = this.deviceManager;
-    if (!manager?.devices.some(isFastWarmThermostat)) {
-      return;
-    }
     const instanceId = ThermostatRuntime.instanceId({
       projectType: this.options.projectType, endpoint: this.options.endpoint, accessId: this.options.accessId,
       username: this.options.username, bridge: this.config._bridge?.username ?? this.config.name,
     });
-    const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:thermostat-profiles:${instanceId}`);
-    const cached = this.cachedAccessories.find(accessory => accessory.UUID === uuid);
-    // Keep a cached controller paired even when a transient UI/runtime startup problem occurs.
-    if (cached) {
-      this.cachedAccessories = this.cachedAccessories.filter(accessory => accessory !== cached);
+    const homeUuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:thermostat-profiles:${instanceId}`);
+    const holidayUuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:thermostat-profiles:${instanceId}:holiday`);
+    const known = [...this.thermostatProfileControllers, ...this.cachedAccessories];
+    const cachedHome = known.find(accessory => accessory.UUID === homeUuid);
+    const cachedHoliday = known.find(accessory => accessory.UUID === holidayUuid);
+    // Claim both controllers before any runtime failure or incomplete discovery can reach the unused-cache sweep.
+    this.cachedAccessories = this.cachedAccessories.filter(accessory => accessory.UUID !== homeUuid && accessory.UUID !== holidayUuid);
+    this.thermostatProfileControllers = [cachedHome, cachedHoliday].filter((accessory): accessory is PlatformAccessory => !!accessory);
+    if (this.thermostatRuntime || !manager?.devices.some(isFastWarmThermostat)) {
+      return;
     }
     const runtime = new ThermostatRuntime(manager, this.api.user.persistPath(), instanceId, this.log);
     try {
       await runtime.start();
+      const home = cachedHome ?? new this.api.platformAccessory('Heating Home', homeUuid);
+      const holiday = cachedHoliday ?? new this.api.platformAccessory('Heating Holiday', holidayUuid);
+      const configured = configureThermostatProfileAccessories(this, runtime, home, holiday, () => {
+        for (const [accessory, cached] of [[home, cachedHome], [holiday, cachedHoliday]] as const) {
+          if (cached) {
+            this.api.updatePlatformAccessories([accessory]);
+          } else {
+            this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+            this.thermostatProfileControllers.push(accessory);
+          }
+        }
+      });
+      this.thermostatProfileAccessories = configured.bindings;
       this.thermostatRuntime = runtime;
-      const accessory = cached ?? new this.api.platformAccessory('Heating Programmes', uuid);
-      this.thermostatProfileAccessory = new ThermostatProfileAccessory(this, accessory, runtime);
-      if (!cached) {
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      if (configured.error) {
+        this.log.warn('Programme control publication incomplete; retry after restart: %s', configured.error.message);
       }
     } catch (error) {
+      this.thermostatProfileAccessories.forEach(binding => binding.dispose());
+      this.thermostatProfileAccessories = [];
       await runtime.close();
       this.log.warn('Thermostat programme controls unavailable: %s', String(error));
     }

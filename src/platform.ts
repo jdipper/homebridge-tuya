@@ -18,6 +18,7 @@ import { initLogger } from './util/Logger';
 import ThermostatRuntime from './device/schedule/ThermostatRuntime';
 import ThermostatProfileAccessory, { configureThermostatProfileAccessories } from './accessory/ThermostatProfileAccessory';
 import { isFastWarmThermostat } from './device/profile/FastWarmThermostat';
+import { writeDeviceCache } from './util/DeviceCache';
 
 
 /**
@@ -205,7 +206,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     if (!fs.existsSync(this.api.user.persistPath())) {
       await fs.promises.mkdir(this.api.user.persistPath());
     }
-    await fs.promises.writeFile(file, JSON.stringify(devices, null, 2));
+    await writeDeviceCache(file, devices);
 
     // add accessories
     for (const device of devices) {

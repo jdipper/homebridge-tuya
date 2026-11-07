@@ -9,6 +9,12 @@
 - Read actual room temperature for FastWarm ET-63 thermostats with product ID `lmtejj3f4kafi2k1` when Tuya's standard schema omits it. See [FastWarm temperature support](docs/fastwarm-temperature.md).
 - Prevent out-of-order raw MQTT reports without property codes from overwriting values belonging to different datapoints.
 
+### Security
+ - Cancel superseded smart-lock requests through the HTTP dispatch boundary and avoid resending ambiguous lock operations.
+ - Redact credentials in API paths, structured logs and camera command diagnostics.
+ - Omit local device keys and location from diagnostic caches, and atomically replace caches with owner-only files.
+ - Refresh affected dependency versions and use Node's built-in UUID generator.
+
 ## [2.7.1] - (2026.10.20)
 
 ### Added

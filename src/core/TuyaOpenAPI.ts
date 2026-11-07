@@ -3,7 +3,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import https from 'https';
 import Crypto from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
 import retry from 'async-await-retry';
 import dns from 'dns';
 
@@ -12,7 +11,7 @@ import dns from 'dns';
 import { version } from '../../package.json';
 
 import { ExLogger, logger, PrefixLogger } from '../util/Logger';
-import { redactSensitive } from '../util/util';
+import { redactSensitive, redactSensitiveText } from '../util/util';
 
 enum Endpoints {
   AMERICA = 'https://openapi.tuyaus.com',
@@ -80,6 +79,17 @@ const ipv4Agent = new https.Agent({
 });
 
 export type TuyaOpenAPIResponse = TuyaOpenAPIResponseSuccess | TuyaOpenAPIResponseError;
+
+/** A caller may invalidate queued commands and restrict ambiguous transport retries. */
+export interface TuyaRequestOptions {
+  shouldProceed?: () => boolean;
+  attempts?: number;
+  timeoutMs?: number;
+}
+
+function cancelledRequest(): TuyaOpenAPIResponse {
+  return { success: false, result: null, code: -1, msg: 'Request superseded', t: Date.now(), tid: '' };
+}
 
 export default class TuyaOpenAPI {
 
@@ -297,7 +307,10 @@ export default class TuyaOpenAPI {
     return res;
   }
 
-  async request(method: string, path: string, params?, body?, options?: { attempts?: number; timeoutMs?: number }) {
+  async request(method: string, path: string, params?, body?, options: TuyaRequestOptions = {}) {
+    if (options.shouldProceed?.() === false) {
+      return cancelledRequest();
+    }
     const deadline = options?.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
     if (options?.timeoutMs === undefined) {
       await this._refreshAccessTokenIfNeed(path);
@@ -320,9 +333,12 @@ export default class TuyaOpenAPI {
     if (deadline !== undefined && Date.now() >= deadline) {
       throw new Error('Tuya request deadline expired before transmission.');
     }
+    if (options.shouldProceed?.() === false) {
+      return cancelledRequest();
+    }
 
     const now = new Date().getTime();
-    const nonce = uuidv4();
+    const nonce = Crypto.randomUUID();
     const accessToken = this.tokenInfo.access_token || '';
     const stringToSign = this._getStringToSign(method, path, params, body);
     const headers = {
@@ -339,7 +355,8 @@ export default class TuyaOpenAPI {
       'devVersion': version,
     };
     this.log.debug('Request:\nmethod = %s\nendpoint = %s\npath = %s\nquery = %s\nheaders = %s\nbody = %s',
-      method, this.endpoint, path, JSON.stringify(params, null, 2), JSON.stringify(headers, null, 2), JSON.stringify(body, null, 2));
+      method, redactSensitiveText(this.endpoint), redactSensitiveText(path), JSON.stringify(redactSensitive(params), null, 2),
+      JSON.stringify(redactSensitive(headers), null, 2), JSON.stringify(redactSensitive(body), null, 2));
 
     if (params) {
       path += '?' + new URLSearchParams(params).toString();
@@ -355,6 +372,12 @@ export default class TuyaOpenAPI {
       if (this.forceIPv4) {
         requestOptions['agent'] = ipv4Agent;
       }
+      // The check belongs at the dispatch boundary: refresh and a previous
+      // network attempt may have yielded to a newer physical-device command.
+      if (options.shouldProceed?.() === false) {
+        resolve(cancelledRequest());
+        return;
+      }
       const req = https.request(requestOptions, res => {
         res.setEncoding('utf8');
         let rawData = '';
@@ -369,7 +392,7 @@ export default class TuyaOpenAPI {
           // caller forever, which made API failures completely invisible.
           if (res.statusCode !== 200) {
             this.log.warn('Status: %d %s, path = %s, body = %s',
-              res.statusCode, res.statusMessage, path, rawData.slice(0, 512));
+              res.statusCode, redactSensitiveText(res.statusMessage ?? ''), redactSensitiveText(path), redactSensitiveText(rawData).slice(0, 512));
           }
 
           try {
@@ -377,7 +400,7 @@ export default class TuyaOpenAPI {
           } catch (error) {
             resolve({
               success: false,
-              result: rawData.slice(0, 512),
+              result: redactSensitiveText(rawData).slice(0, 512),
               code: res.statusCode ?? -1,
               msg: res.statusMessage ?? 'Invalid response body',
               t: Date.now(),
@@ -407,7 +430,7 @@ export default class TuyaOpenAPI {
       req.end();
     }), undefined, {retriesMax: options?.attempts ?? 10, interval: 100, exponential: true, factor: 2, jitter: 100});
 
-    this.log.debug('Response:\npath = %s\ndata = %s', path, JSON.stringify(redactSensitive(res), null, 2));
+    this.log.debug('Response:\npath = %s\ndata = %s', redactSensitiveText(path), JSON.stringify(redactSensitive(res), null, 2));
     if (res && res.success !== true && API_ERROR_MESSAGES[res.code]) {
       this.log.error(API_ERROR_MESSAGES[res.code]);
     }
@@ -419,8 +442,8 @@ export default class TuyaOpenAPI {
     return this.request('get', path, params, null);
   }
 
-  async post(path: string, params?) {
-    return this.request('post', path, null, params);
+  async post(path: string, params?, options?: TuyaRequestOptions) {
+    return this.request('post', path, null, params, options);
   }
 
   /** Single-attempt mutation with a deadline; callers must verify an uncertain result instead of retrying. */

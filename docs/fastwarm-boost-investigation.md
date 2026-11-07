@@ -459,3 +459,120 @@ Prepare and test any candidate transport behind the activation gate before its
 controlled hardware test. Enable user-facing boosts only after the hardware
 checks pass. Homebridge failure, thermostat power loss, clock
 retention, DST and conflicting manual edits remain separate validation cases.
+
+## Sequential heating investigation — 7 November 2026
+
+The user authorized investigation of the sequential activation and timed-return
+protocol. They chose to defer the internet-isolation test and accept device-local
+timer execution as a working assumption. Offline execution remains unverified;
+this does not require another support inquiry or LAN control.
+
+### Immediate mode/target sequence: passed
+
+The pilot was online, powered, in Celsius thermostat mode, Scheduled at 20°C,
+with an empty native timer list. A fresh complete programme read at 15:07:44 UTC
+confirmed Saturday's 08:30 and 17:00 events both target 20°C, with 12°C at 22:00.
+The thermostat clock itself was not independently observed. The short test did
+not alter the programme, power, lock, network or any other thermostat.
+
+`tools/fastwarm-heating-sequence-probe.cjs` defaults to GET-only. Its explicit
+execution mode sends separate single-property commands, preserves each native
+property's report timestamp, bounds observation, and always attempts separate
+Smart/original-target recovery. An operator-supplied expected target and short
+programme-boundary exclusion window must match preflight. The tested ceiling
+allows the already observed 22°C Hold recall, with a requested boost of 20.5°C.
+
+| Native observation | UTC device-report time | Result |
+| --- | --- | --- |
+| `ControlMode: hold` alone | 15:08:44.991 | Hold recalled 22°C; target report was 1 ms earlier. |
+| `SetTemp: 205` after fresh Hold confirmation | 15:08:47.351 | Hold at 20.5°C, stable during the following 10-second observation. |
+| `ControlMode: smart` alone | 15:09:00.025 | Scheduled at 20°C; target report was 7 ms earlier, before any explicit restoration target command. Stable during the following 10-second observation. |
+| Explicit 20°C restoration and final recovery | final read 15:09:33.549 | Fresh Scheduled/20°C reports remained stable; recovery verified. |
+
+The independent operation-log query returned all six temperature command/report
+entries (`has_next: false`), including the 22°C recall, 20.5°C boost and automatic
+20°C return. Native mode evidence comes from timestamped shadow properties;
+the standard operation-log results did not include the mode changes.
+
+This supports entering Hold **before** setting its target. The earlier combined
+write could change the Smart target before entering Hold; the new sequence avoids
+that. Smart-alone restoration is demonstrated for this same-period test. It does
+not yet distinguish remembered Smart targets from native programme re-evaluation
+and does not establish restoration across a changing programme boundary.
+
+The owner-only remote journal is `/tmp/fastwarm-heating-sequence-probe.json`;
+the independent trace is `/tmp/fastwarm-heating-sequence-trace.json`. No runtime
+deployment or user-facing boost activation was performed.
+
+### Native Smart-only timed return: passed online
+
+`tools/fastwarm-heating-timer-probe.cjs` created one uniquely owned, one-off native
+`ControlMode: smart` task for **15:20:00 UTC**, verified every saved field and its
+enabled state, waited for settings to settle, then entered Hold before setting
+20.5°C. There were no pre-existing timers. No temperature command was included
+in the timer, and no multi-function ordering assumption was needed.
+
+Hold at 20.5°C remained confirmed until the deadline. Scheduled mode and 20°C
+were reported at **15:20:04.031** and **15:20:04.030** respectively, observed by
+the probe at **15:20:05.569**. These are cloud report/observation times, not a
+measurement of physical execution latency. No API fallback resume or target
+command was sent. Both fresh values remained stable through the cleanup
+observation at **15:20:15.904**.
+
+The owned timer was then deleted. All-task and own-category queries verified
+its absence and the unchanged empty baseline; final cleanup was recorded at
+**15:20:16.795**. The owner-only journal is
+`/tmp/fastwarm-heating-timer-probe.json`, including operation logs requested
+without a native-code filter. A native-code filter on the log endpoint had
+returned `40000308`; unfiltered type 5/7/10 queries succeed.
+
+This demonstrates online, same-period boost activation and automatic restoration
+using a single native timer action. Offline execution remains the user's accepted
+working assumption, and a changing-period return still needs a distinct test.
+
+### Distinguish remembered Smart target from programme target: observed
+
+The separate `--execute-discriminator` diagnostic temporarily set Smart to 19.5°C,
+confirmed it, entered Hold, set 20.5°C, then returned to Smart **without** sending
+a target command. The native weekly programme contained only 20°C and 12°C;
+it was not edited.
+
+Smart returned to **19.5°C**, with mode and target reports at
+**15:21:26.491** and **15:21:26.490 UTC** respectively. It remained there during
+the 10-second observation ending **15:21:38.676**. The fresh evidence supports
+recall of the previous temporary Smart target in this test; a Smart-only command
+is not a general clear-temporary-override action. It does not establish whether
+the hidden Smart target is updated by programme events while Hold is active.
+
+Separate explicit Smart/20°C restoration and final recovery were verified,
+with the last stable observation at **15:22:03.786**. The owner-only journal is
+`/tmp/fastwarm-heating-discriminator-probe.json`. The original immediate-sequence
+journal is preserved separately.
+
+One possible protocol is to prepare the desired expiry-period target in Smart
+before entering Hold, then let a single Smart timer recall it. This remains a
+candidate: partial activation, manual cancellation, later programme edits, and
+intermediate events need consideration. Do not enable it on the strength of the
+same-period test alone.
+
+### Remaining natural-boundary check
+
+The next Saturday event is 17:00 at 20°C, which could test Hold persistence but
+cannot demonstrate selection of a changed programme temperature. The next useful
+temperature change is **22:00, 20°C → 12°C**. A short proposed test would enter
+Hold at 20.5°C around 21:59 and use a Smart-only timer at 22:01, requiring fresh
+Scheduled/12°C confirmation after expiry. This has **not** been scheduled: there
+is no pending future timer or unattended heating job from this investigation.
+
+Near the test, re-read the unchanged complete programme, verify thermostat clock
+alignment and the Smart/20°C baseline, then create and verify the one-off return
+task before entering Hold. Stop on conflicting manual/programme changes instead
+of blindly applying 12°C. Clock configuration alone does not confirm the physical
+thermostat clock. Recovery at that boundary must use the newly active 12°C period,
+not this afternoon's captured 20°C baseline.
+
+The standalone diagnostics have 16 sequence/discriminator VM scenarios and eight
+timer scenarios, covering stale reports, uncertain writes, interrupted execution,
+failed timer execution, disk errors, recovery and ownership-limited cleanup.
+They do not substitute for the remaining physical boundary test. Runtime boost
+activation remains gated; the installed plugin was not redeployed.

@@ -6,6 +6,11 @@ the host's Save button retains its normal configuration behaviour. The editor's
 **Save draft** button stores a complete Home, Away or Holiday weekly programme in
 the running Tuya platform without uploading it to a thermostat.
 
+The script and stylesheet URLs include the first twelve characters of their
+SHA-256 content hashes. Update these keys in `index.html` when either asset
+changes, so an in-place development upgrade cannot reuse an older cached UI.
+The asset regression test checks this upgrade contract.
+
 When no thermostat runtime is discovered, the UI opens Settings by default so
 the plugin's ordinary connection and accessory configuration stays available.
 The Thermostats tab remains available with discovery status and Refresh.

@@ -2,6 +2,7 @@ import EventEmitter from 'events';
 import { createHash, randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { writePrivateJson } from '../../util/PrivateFile';
 import { Logger } from 'homebridge';
 import TuyaDevice, { TuyaDeviceStatus } from '../TuyaDevice';
 import TuyaDeviceManager, { ThermostatTemperatureObservation } from '../TuyaDeviceManager';
@@ -1039,12 +1040,9 @@ export default class ThermostatRuntime extends EventEmitter {
   private async persist() {
     const contents = JSON.stringify({ version: 2, profiles: this.state, controls: this.controls,
       snapshots: [...this.snapshots.values()], overrides: this.overrides, rooms: this.roomSettings, history: this.history.snapshot() });
-    const write = this.persistence.then(async () => {
-      await fs.mkdir(path.dirname(this.file), { recursive: true });
-      const temporary = `${this.file}.${process.pid}.tmp`;
-      await fs.writeFile(temporary, contents, { mode: 0o600 });
-      await fs.rename(temporary, this.file);
-    });
+    // Freeze each queued revision before yielding; the writer uses exclusive,
+    // unpredictable temporary files and replaces legacy permissive files.
+    const write = this.persistence.then(() => writePrivateJson(this.file, JSON.parse(contents)));
     this.persistence = write.catch(() => undefined);
     return write;
   }

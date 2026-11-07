@@ -149,6 +149,23 @@ afterEach(async () => {
 });
 
 describe('thermostat runtime explicit manual operations', () => {
+  test('profile persistence ignores legacy temporary symlinks and replaces permissive files privately', async () => {
+    if (process.platform === 'win32') { return; }
+    const { runtime, directory, transport } = await fixture();
+    const file = path.join(directory, 'TuyaThermostatProfiles.0123456789abcdef.json');
+    const unrelated = path.join(directory, 'unrelated.txt');
+    await fs.writeFile(unrelated, 'UNRELATED_FILE_CANARY');
+    await fs.writeFile(file, '{}', { mode: 0o644 });
+    await fs.symlink(unrelated, `${file}.${process.pid}.tmp`);
+    await runtime.handle('/rooms/save', { deviceId: 'room-a', name: 'Fixture room' });
+    expect(await fs.readFile(unrelated, 'utf8')).toBe('UNRELATED_FILE_CANARY');
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    expect((await fs.lstat(file)).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).rooms['room-a'].name).toBe('Fixture room');
+    expect(transport.apply).not.toHaveBeenCalled();
+    expect(transport.activateProgramme).not.toHaveBeenCalled();
+  });
+
   test('startup, saving profiles, reading and previewing never apply or activate a programme', async () => {
     const { runtime, transport } = await fixture();
     expect(transport.read).not.toHaveBeenCalled();

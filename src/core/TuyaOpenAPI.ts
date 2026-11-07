@@ -443,7 +443,7 @@ export default class TuyaOpenAPI {
   }
 
   async post(path: string, params?, options?: TuyaRequestOptions) {
-    return this.request('post', path, null, params, options);
+    return options === undefined ? this.request('post', path, null, params) : this.request('post', path, null, params, options);
   }
 
   /** Single-attempt mutation with a deadline; callers must verify an uncertain result instead of retrying. */

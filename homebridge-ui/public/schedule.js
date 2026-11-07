@@ -78,6 +78,30 @@ function cloneProgrammeForRooms(schedule, deviceIds) {
   return deviceIds.map(deviceId => ({ deviceId, schedule: JSON.parse(JSON.stringify(schedule)) }));
 }
 
+const THERMOSTAT_BUSY_STATUSES = ['reading', 'verifying', 'applying', 'queued', 'overriding', 'resuming'];
+
+/** Verification compares a saved draft with the device; it never prepares an upload. */
+function savedProgrammeVerification(room, profile, options = {}) {
+  const name = { home: 'Home', away: 'Away', holiday: 'Holiday' }[profile];
+  let reason = '';
+  if (!name) { reason = 'Choose Home, Away or Holiday to verify a saved programme.'; }
+  else if (options.online === false || room.online !== true) { reason = 'The thermostat and heating controller must be online to verify a programme.'; }
+  else if (options.pending || THERMOSTAT_BUSY_STATUSES.includes(room.sync && room.sync.status)) { reason = 'Wait for the current operation to finish before verifying.'; }
+  else if (room.override && (room.override.recoveryRequired || room.override.status
+    && !['completed', 'cancelled', 'failed', 'idle'].includes(room.override.status))) {
+    reason = 'Restore the programme after the temporary temperature before verifying it.';
+  }
+  else if (options.dirty) { reason = `Save the edited ${name} draft before verifying its saved programme.`; }
+  else {
+    try {
+      copyCompleteNativeProgramme({ ...(room.profiles && room.profiles[profile]), complete: true });
+    } catch {
+      reason = `Save a complete ${name} programme before verifying it.`;
+    }
+  }
+  return { allowed: !reason, reason, request: reason ? null : { deviceIds: [room.id], verifyProfile: profile } };
+}
+
 /** Household intent is independent of the programme tab being edited. */
 function householdProgrammeIntent(view) {
   const presence = view.presence || {};
@@ -113,6 +137,7 @@ function roomProgrammeFeedback(room, options = {}) {
   const sync = room.sync || {};
   const requested = options.profile || sync.requestedProfile;
   const name = names[requested] || 'Programme';
+  const attemptedName = names[sync.lastAttemptedProfile] || name;
   const confirmedName = names[sync.confirmedProfile];
   const date = value => typeof options.formatDate === 'function' ? options.formatDate(value) : new Date(value).toLocaleString();
   const confirmedAt = Number.isFinite(sync.confirmedAt) && sync.confirmedAt > 0 ? sync.confirmedAt : null;
@@ -128,15 +153,20 @@ function roomProgrammeFeedback(room, options = {}) {
   if (room.online !== true) {
     return result('offline', `Offline · ${requested ? `${name} not confirmed` : room.enabled ? 'no programme requested' : 'automatic changes off'}`, previous);
   }
+  if (sync.status === 'verifying') {
+    return result('checking', `Verifying saved ${names[sync.lastAttemptedProfile] || names[requested] || 'programme'}`,
+      `Checking the stored programme and Scheduled mode only; no programme upload or mode change. ${previous}`);
+  }
   if (sync.error || ['failed', 'partial', 'conflict'].includes(sync.status)
     || ['failed', 'partial'].includes(sync.profileStatus)) {
-    return result('attention', `${name} needs attention`, `${sync.error || 'The programme update has not been confirmed.'} ${previous}`);
+    return result('attention', `${attemptedName} needs attention`, `${sync.error || 'The programme update has not been confirmed.'}${requested && names[sync.lastAttemptedProfile]
+      && sync.lastAttemptedProfile !== requested ? ` ${name} remains requested.` : ''} ${previous}`);
   }
   if (override.status && !['completed', 'cancelled', 'failed', 'idle'].includes(override.status)) {
     return result('attention', `${name} not active`, `A temporary temperature is active or being restored. ${previous}`);
   }
   if (['applying', 'queued'].includes(sync.status) || sync.profileStatus === 'applying') {
-    const applyingProfile = sync.applyingProfile || sync.queuedProfile;
+    const applyingProfile = sync.applyingProfile || sync.queuedProfile || sync.lastAttemptedProfile;
     const applyingName = names[applyingProfile];
     const title = applyingName ? `${sync.status === 'queued' && !sync.applyingProfile ? 'Queued' : 'Applying'} ${applyingName}` : 'Programme update in progress';
     return result('applying', title, `${requested ? `${name} requested. ` : ''}Waiting for the complete programme and Scheduled mode to be confirmed. ${previous}`);
@@ -204,7 +234,10 @@ function buildProgrammeFeedback(view, options = {}) {
       'Each room is confirmed after its complete programme is read back and Scheduled mode is checked.');
   }
   if (counts.checking) {
-    return result('applying', `Checking ${name} · ${progress}`, 'Waiting for programme reads to finish. A successful read alone does not confirm a programme change.');
+    const otherVerification = enabled.some(room => room.sync && room.sync.status === 'verifying'
+      && room.sync.lastAttemptedProfile && room.sync.lastAttemptedProfile !== profile);
+    return result('applying', `${otherVerification ? `Checking programmes · ${name} requested` : `Checking ${name}`} · ${progress}`,
+      'Waiting for programme checks to finish. A raw programme read alone does not verify a saved profile.');
   }
   if (confirmed === total) {
     return result('confirmed', total === 1 ? `${name} confirmed in 1 room` : `${name} confirmed on all ${total} rooms`,
@@ -215,7 +248,7 @@ function buildProgrammeFeedback(view, options = {}) {
 
 if (typeof module === 'object' && module.exports) {
   module.exports = { buildTemperatureHistorySeries, scheduleRoomLabel, copyCompleteNativeProgramme, cloneProgrammeForRooms,
-    householdProgrammeIntent, householdProgrammeContext, roomProgrammeFeedback, buildProgrammeFeedback };
+    savedProgrammeVerification, householdProgrammeIntent, householdProgrammeContext, roomProgrammeFeedback, buildProgrammeFeedback };
 }
 
 (() => {
@@ -232,12 +265,12 @@ if (typeof module === 'object' && module.exports) {
   const MODES = { smart: 'Scheduled', hold: 'Hold', holiday: 'Native holiday' };
   const STATUSES = {
     verified: 'Confirmed', partial: 'Incomplete', failed: 'Failed', conflict: 'Changed elsewhere',
-    reading: 'Reading', applying: 'Applying', queued: 'Queued', idle: 'Not yet confirmed',
+    reading: 'Reading', verifying: 'Verifying saved programme', applying: 'Applying', queued: 'Queued', idle: 'Not yet confirmed',
     pending: 'Pending', unknown: 'Unknown',
     overriding: 'Starting temporary temperature', resuming: 'Restoring programme',
     starting: 'Starting', active: 'Temporary temperature active', 'recovery-required': 'Restoration needs attention',
   };
-  const BUSY = new Set(['reading', 'applying', 'queued', 'overriding', 'resuming']);
+  const BUSY = new Set(THERMOSTAT_BUSY_STATUSES);
   const state = {
     view: { thermostats: [], presence: { home: null }, holiday: { active: false } },
     instanceId: null,
@@ -454,6 +487,7 @@ if (typeof module === 'object' && module.exports) {
       sharedSave.disabled = !selected.length || state.pending || !state.online;
       sharedSave.textContent = `Save programme for ${selected.length} room${selected.length === 1 ? '' : 's'}`;
     }
+    updateVerificationControls();
   }
 
   function acceptView(view) {
@@ -577,13 +611,13 @@ if (typeof module === 'object' && module.exports) {
     }
   }
 
-  async function action(path, payload, message) {
+  async function action(path, payload, message, messageKind = 'success') {
     state.pending = true;
     render();
     try {
       const view = await request(path, payload);
       acceptView(view);
-      showMessage(message, 'success');
+      showMessage(message, messageKind);
       return view;
     } catch (error) {
       showMessage(error.message || 'The request could not be completed.', 'error');
@@ -607,6 +641,19 @@ if (typeof module === 'object' && module.exports) {
     } catch {
       state.readRequests.delete(room.id);
     }
+  }
+
+  async function verifySavedProgramme(room) {
+    const profile = state.profile;
+    const verification = savedProgrammeVerification(room, profile, {
+      online: state.online, pending: state.pending, dirty: getDraft(room, profile).dirty,
+    });
+    if (!verification.allowed) {
+      showMessage(verification.reason, 'error');
+      return;
+    }
+    await action('/schedules/read', verification.request,
+      `Verifying saved ${PROFILES[profile]} programme for ${roomLabel(room)}. Checking only; no programme upload or mode change.`, '');
   }
 
   const sharedKey = () => `${state.instanceId}:${state.profile}`;
@@ -1246,6 +1293,21 @@ if (typeof module === 'object' && module.exports) {
     if (detail.textContent !== feedback.detail) { detail.textContent = feedback.detail; }
   }
 
+  function updateVerificationControls() {
+    document.querySelectorAll('[data-verify-room]').forEach(node => {
+      const room = thermostat(node.dataset.verifyRoom);
+      const profile = node.dataset.verifyProfile;
+      const verification = room && savedProgrammeVerification(room, profile, {
+        online: state.online, pending: state.pending, dirty: getDraft(room, profile).dirty,
+      });
+      node.disabled = !verification || !verification.allowed;
+      const help = byId(node.getAttribute('aria-describedby'));
+      const text = verification && (verification.reason
+        || `Compare the programme stored on this thermostat with the saved ${PROFILES[profile]} programme and check Scheduled mode. This does not upload a programme or change its mode.`);
+      if (help && text && help.textContent !== text) { help.textContent = text; }
+    });
+  }
+
   function renderProgrammeFeedback() {
     const options = { online: state.online, formatDate };
     fillProgrammeFeedback(byId('programme-feedback'), buildProgrammeFeedback(state.view, options));
@@ -1256,6 +1318,7 @@ if (typeof module === 'object' && module.exports) {
       const room = thermostat(node.dataset.roomFeedback);
       if (room) { fillProgrammeFeedback(node, roomProgrammeFeedback(room, options)); }
     });
+    updateVerificationControls();
     const home = state.view.presence && state.view.presence.home;
     const holiday = !!(state.view.holiday && state.view.holiday.active);
     byId('home-control').classList.toggle('selected', home === true);
@@ -1381,6 +1444,20 @@ if (typeof module === 'object' && module.exports) {
     roomDetails.append(element('p', 'last-confirmed', `Reading time: ${reportedAt ? formatDate(reportedAt) : 'device time unavailable'} · received locally: ${formatDate(receivedAt)}${room.telemetryAvailable === false ? ' · live telemetry unavailable' : ''}`));
     roomDetails.append(element('p', 'last-confirmed', `Last confirmed profile: ${confirmed} · last programme read: ${formatDate(room.lastUpdated)} · ${typeof room.grouping === 'number' ? (room.grouping & 1 ? '5+1+1 days' : 'Seven days') : 'Grouping unknown'}`));
     roomDetails.append(roomTools(room));
+    const verification = savedProgrammeVerification(room, state.profile, {
+      online: state.online, pending: state.pending, dirty: draft.dirty,
+    });
+    const verificationActions = element('div', 'thermostat-actions');
+    const verify = button(`Verify saved ${PROFILES[state.profile]} programme`, () => verifySavedProgramme(room).catch(() => {}));
+    verify.disabled = !verification.allowed;
+    verify.dataset.verifyRoom = room.id;
+    verify.dataset.verifyProfile = state.profile;
+    verificationActions.append(verify);
+    const verificationHelp = element('p', 'schedule-help', verification.reason
+      || `Compare the programme stored on this thermostat with the saved ${PROFILES[state.profile]} programme and check Scheduled mode. This does not upload a programme or change its mode.`);
+    verificationHelp.id = `verify-help-${room.id}`;
+    verify.setAttribute('aria-describedby', verificationHelp.id);
+    roomDetails.append(verificationActions, verificationHelp);
     const count = room.schedule && Array.isArray(room.schedule.missing) ? 28 - room.schedule.missing.length : 0;
     const native = details(`${room.id}:native`, `Programme on thermostat · ${room.schedule && room.schedule.complete ? 'complete' : `${count}/28 periods received`}`, 'native-programme');
     const nativeActions = element('div', 'thermostat-actions');

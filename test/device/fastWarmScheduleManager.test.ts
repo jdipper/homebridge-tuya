@@ -230,12 +230,150 @@ describe('FastWarm programme transport', () => {
     expect(result.applied).toBe(1);
     expect(result.planned).toBe(4);
     expect(result.unknownOutcome).toBe(true);
+    expect(result.verificationReads).toBe(1);
     expect(scheduleWrites()).toHaveLength(2);
     expect(result.readback!.state.days[0].events[0].temperature).toBe(25);
     expect(result.readback!.state.days[0].events[1].temperature).toBe(16);
   });
 
-  test('distinguishes acknowledged commands from verified device state', async () => {
+  test('bounds inquiries for persistently different device state without retrying any write', async () => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state));
+    draft.days[6].events[2].temperature = 12;
+    post.mockImplementation(async (_path, body) => {
+      if (JSON.parse(body.properties).inquire) {
+        await emitWeek();
+      }
+      return success();
+    });
+    const pending = manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint! });
+    await jest.advanceTimersByTimeAsync(2000);
+    const result = await pending;
+    expect(result.status).toBe('unverified');
+    expect(result.unknownOutcome).toBe(true);
+    expect(result.verificationReads).toBe(3);
+    expect(result.error).toContain('3 readback attempts');
+    expect(result.error).toContain('1 differing period (Sunday Return)');
+    expect(result.error).toContain('Do not automatically retry');
+    expect(scheduleWrites()).toHaveLength(1);
+    expect(propertiesSent().filter(properties => properties.inquire)).toHaveLength(5);
+    expect(propertiesSent().some(properties => properties.ControlMode)).toBe(false);
+  });
+
+  test('preserves an uncertain write error even when its single diagnostic read matches', async () => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state));
+    draft.days[6].events[2].temperature = 12;
+    const original = post.getMockImplementation()!;
+    post.mockImplementation(async (...args) => {
+      const response = await original(...args);
+      if (JSON.parse(args[1].properties).week_program) {
+        throw new Error('write acknowledgement lost');
+      }
+      return response;
+    });
+    const result = await manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint! });
+    expect(result.status).toBe('failed');
+    expect(result.error).toBe('write acknowledgement lost');
+    expect(result.unknownOutcome).toBe(true);
+    expect(result.readback!.state).toEqual(draft);
+    expect(result.verificationReads).toBe(1);
+    expect(scheduleWrites()).toHaveLength(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test('verifies delayed final-event reports with only a follow-up inquiry', async () => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state));
+    draft.days[6].events[2].temperature = 12;
+    const original = post.getMockImplementation()!;
+    let inquiries = 0;
+    post.mockImplementation(async (...args) => {
+      if (JSON.parse(args[1].properties).inquire && ++inquiries === 2) {
+        await emitWeek(baseline.state);
+        return success();
+      }
+      return original(...args);
+    });
+    const pending = manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint! });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(inquiries).toBe(2);
+    expect(scheduleWrites()).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(999);
+    expect(inquiries).toBe(2);
+    await jest.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(result.status).toBe('verified');
+    expect(result.verificationReads).toBe(2);
+    expect(result.readback!.state).toEqual(draft);
+    expect(result.applied).toBe(1);
+    expect(scheduleWrites()).toHaveLength(1);
+    expect(propertiesSent().some(properties => properties.ControlMode)).toBe(false);
+  });
+
+  test('reports missing periods after bounded incomplete readbacks', async () => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state));
+    draft.days[0].events[0].temperature = 25;
+    let inquiries = 0;
+    post.mockImplementation(async (_path, body) => {
+      if (JSON.parse(body.properties).inquire) {
+        if (++inquiries === 1) {
+          await emitWeek();
+        } else {
+          await emit([{ code: 'week_program', value: encodeFastWarmSchedule({ dayMask: 1, events: stored.days[0].events }) }]);
+        }
+      }
+      return success();
+    });
+    const pending = manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint! });
+    await jest.advanceTimersByTimeAsync(92000);
+    const result = await pending;
+    expect(result.status).toBe('unverified');
+    expect(result.verificationReads).toBe(3);
+    expect(result.error).toContain('24 missing periods (Tuesday Wake, Tuesday Leave, Tuesday Return, …)');
+    expect(result.error).toContain('1 differing period (Monday Wake)');
+    expect(result.error).toContain('the latest inquiry timed out');
+    expect(scheduleWrites()).toHaveLength(1);
+  });
+
+  test.each(['closed', 'offline'])('stops follow-up inquiries when %s during the delay', async kind => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state));
+    draft.days[0].events[0].temperature = 25;
+    post.mockImplementation(async (_path, body) => {
+      if (JSON.parse(body.properties).inquire) {
+        await emitWeek();
+      }
+      return success();
+    });
+    const pending = manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint! });
+    await jest.advanceTimersByTimeAsync(0);
+    if (kind === 'closed') {
+      manager.close();
+    } else {
+      device.online = false;
+      await jest.advanceTimersByTimeAsync(1000);
+    }
+    const result = await pending;
+    expect(result.status).toBe('partial');
+    expect(result.error).toContain(kind);
+    expect(result.verificationReads).toBe(1);
+    expect(propertiesSent().filter(properties => properties.inquire)).toHaveLength(3);
+    expect(scheduleWrites()).toHaveLength(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test.each([
+    { verificationAttempts: 0 }, { verificationAttempts: 4 }, { verificationAttempts: 1.5 },
+    { verificationDelayMs: -1 }, { verificationDelayMs: Number.NaN }, { verificationDelayMs: 60001 },
+  ])('rejects invalid verification bounds %j', options => {
+    expect(() => new FastWarmScheduleManager(api, mq, () => device, options)).toThrow('Schedule verification');
+  });
+
+  test('can explicitly limit verification to one read without retrying writes', async () => {
+    manager.close();
+    manager = new FastWarmScheduleManager(api, mq, () => device, { verificationAttempts: 1, verificationDelayMs: 0 });
     const baseline = await manager.read(device.id);
     const draft = JSON.parse(JSON.stringify(baseline.state));
     draft.days[0].events[0].temperature = 25;
@@ -247,8 +385,10 @@ describe('FastWarm programme transport', () => {
     });
     const result = await manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint! });
     expect(result.status).toBe('unverified');
-    expect(result.unknownOutcome).toBe(true);
+    expect(result.verificationReads).toBe(1);
+    expect(result.error).toContain('1 readback attempt:');
     expect(scheduleWrites()).toHaveLength(1);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   test('stops after an explicit command rejection without retrying or claiming an unknown network outcome', async () => {

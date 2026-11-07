@@ -566,6 +566,127 @@ describe('programme confirmation feedback', () => {
   );
 });
 
+describe('explicit read-only profile verification', () => {
+  test('resolves a late matching readback without uploading again or changing mode or household intent', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime);
+    transport.apply.mockImplementationOnce(async id => {
+      const backup = transport.snapshot(id);
+      transport.native.set(id, programme(10));
+      return { status: 'unverified', backup, readback: backup, planned: 28, applied: 28,
+        unknownOutcome: true, error: 'The complete resulting programme could not be verified.' };
+    });
+    const plan = await preview(runtime, 'holiday');
+    await runtime.handle('/schedules/apply', { previewId: plan.id });
+    await idle(runtime);
+    expect(room(runtime).sync).toMatchObject({ status: 'partial', lastAttemptedProfile: 'holiday', confirmedProfile: null });
+    // A normal read still cannot silently reinterpret the earlier operation as successful.
+    await runtime.handle('/schedules/read', { deviceIds: ['room-a'] });
+    await idle(runtime);
+    expect(room(runtime).sync.profileStatus).toBe('partial');
+    await runtime.handle('/schedules/read', { deviceIds: ['room-a'], verifyProfile: 'holiday' });
+    await idle(runtime);
+    expect(room(runtime).sync).toMatchObject({ status: 'verified', profileStatus: 'idle',
+      confirmedProfile: 'holiday', lastAttemptedProfile: 'holiday', requestedProfile: null, error: null });
+    expect(room(runtime).sync.confirmedAt).toEqual(expect.any(Number));
+    expect(room(runtime).enabled).toBe(false);
+    expect(runtime.view().presence.home).toBeNull();
+    expect(runtime.view().holiday.active).toBe(false);
+    expect(transport.apply).toHaveBeenCalledTimes(1);
+    expect(transport.activateProgramme).not.toHaveBeenCalled();
+  });
+
+  test.each(['different programme', 'incomplete read', 'Hold mode', 'grouped mode', 'settings unavailable'])(
+    '%s cannot create a confirmation or overwrite the last valid profile', async failure => {
+      const { runtime, transport, mode, grouping, apiGet } = await fixture();
+      await configure(runtime, true);
+      await runtime.handle('/presence', { home: true });
+      await idle(runtime);
+      const confirmedAt = room(runtime).sync.confirmedAt;
+      transport.apply.mockClear(); transport.activateProgramme.mockClear();
+      if (failure !== 'different programme') transport.native.set('room-a', programme(10));
+      if (failure === 'incomplete read') {
+        transport.read.mockImplementationOnce(async id => ({ ...transport.snapshot(id), fingerprint: null,
+          timedOut: true, errors: ['Incomplete week'] }));
+      }
+      if (failure === 'Hold mode') mode.set('room-a', 'hold');
+      if (failure === 'grouped mode') grouping.set('room-a', 1);
+      if (failure === 'settings unavailable') apiGet.mockRejectedValueOnce(new Error('Tuya unavailable'));
+      await runtime.handle('/schedules/read', { deviceIds: ['room-a'], verifyProfile: 'holiday' });
+      await idle(runtime);
+      expect(room(runtime).sync).toMatchObject({ status: 'failed', confirmedProfile: 'home', confirmedAt,
+        requestedProfile: 'home', lastAttemptedProfile: 'holiday', confirmationMatchesRequested: false });
+      expect(transport.apply).not.toHaveBeenCalled();
+      expect(transport.activateProgramme).not.toHaveBeenCalled();
+    },
+  );
+
+  test('a saved draft edited during the inquiry invalidates its confirmation without device writes', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime);
+    transport.native.set('room-a', programme(10));
+    const started = deferred<void>(), gate = deferred<void>();
+    transport.read.mockImplementationOnce(async id => { started.resolve(); await gate.promise; return transport.snapshot(id); });
+    await runtime.handle('/schedules/read', { deviceIds: ['room-a'], verifyProfile: 'holiday' });
+    await started.promise;
+    await save(runtime, 'holiday', 11);
+    gate.resolve(); await idle(runtime);
+    expect(room(runtime).sync.status).toBe('failed');
+    expect(room(runtime).sync.error).toContain('saved programme changed');
+    expect(room(runtime).sync.confirmedProfile).toBeNull();
+    expect(transport.apply).not.toHaveBeenCalled();
+    expect(transport.activateProgramme).not.toHaveBeenCalled();
+  });
+
+  test('validates every selected room before starting any inquiry', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime);
+    transport.read.mockClear();
+    await expect(runtime.handle('/schedules/read', { deviceIds: ['room-a', 'room-b'], verifyProfile: 'holiday' }))
+      .rejects.toThrow('Save a complete programme for every selected room');
+    expect(transport.read).not.toHaveBeenCalled();
+    await expect(runtime.handle('/schedules/read', { deviceIds: ['room-a'], verifyProfile: 'invented' }))
+      .rejects.toThrow('Home, Away or Holiday');
+    expect(transport.read).not.toHaveBeenCalled();
+  });
+
+  test('an offline room or active temporary temperature is rejected before querying it', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime);
+    transport.read.mockClear();
+    runtime.manager.getDevice('room-a')!.online = false;
+    await expect(runtime.handle('/schedules/read', { deviceIds: ['room-a'], verifyProfile: 'holiday' }))
+      .rejects.toThrow('must be online');
+    runtime.manager.getDevice('room-a')!.online = true;
+    const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature: 21,
+      endsAt: Date.now() + 3600000 }) as unknown as { overridePreview: { id: string } };
+    await runtime.handle('/overrides/start', { previewId: response.overridePreview.id, acceptHostDependentExpiry: true });
+    await idle(runtime);
+    await expect(runtime.handle('/schedules/read', { deviceIds: ['room-a'], verifyProfile: 'holiday' }))
+      .rejects.toThrow('Resume this thermostat');
+    expect(transport.read).not.toHaveBeenCalled();
+    expect(transport.apply).not.toHaveBeenCalled();
+    expect(transport.activateProgramme).not.toHaveBeenCalled();
+  });
+
+  test('a presence change during a manual verification is preserved without applying any programme', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime);
+    transport.native.set('room-a', programme(10));
+    const started = deferred<void>(), gate = deferred<void>();
+    transport.read.mockImplementationOnce(async id => { started.resolve(); await gate.promise; return transport.snapshot(id); });
+    await runtime.handle('/schedules/read', { deviceIds: ['room-a'], verifyProfile: 'holiday' });
+    await started.promise;
+    await runtime.handle('/presence', { home: false });
+    gate.resolve(); await idle(runtime);
+    expect(room(runtime).sync.confirmedProfile).toBe('holiday');
+    expect(runtime.view().presence.home).toBe(false);
+    expect(runtime.view().holiday.active).toBe(false);
+    expect(transport.apply).not.toHaveBeenCalled();
+    expect(transport.activateProgramme).not.toHaveBeenCalled();
+  });
+});
+
 describe('temporary overrides', () => {
   function fakeClock() {
     jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });

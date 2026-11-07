@@ -41,6 +41,37 @@ function confirm(state: ThermostatProfilesState, temperature = 20, operationId =
   });
 }
 
+describe('read-only programme verification', () => {
+  test('records a matching manual Holiday programme without changing household intent or enrollment', () => {
+    const original = configuredState();
+    const next = reduceThermostatProfiles(original, { type: 'programme-verified', deviceId: 'living-room',
+      profileId: 'holiday', programme: programme(10), confirmedAt: 2000 });
+    expect(next.anyoneHome).toBe(original.anyoneHome);
+    expect(next.holiday).toBe(original.holiday);
+    expect(next.enabledDeviceIds).toEqual(original.enabledDeviceIds);
+    expect(next.devices['living-room']).toMatchObject({ requestedProfile: 'home', confirmedProfile: 'holiday',
+      confirmedAt: 2000, inFlight: null, status: 'pending', error: null });
+  });
+
+  test('new proof clears a previous partial failure for the currently requested programme', () => {
+    const failed = reduceThermostatProfiles(start(configuredState()), { type: 'apply-failed', deviceId: 'living-room',
+      operationId: 'operation-1', mayHaveChangedDevice: true, error: 'The first readback was too early.' });
+    const next = reduceThermostatProfiles(failed, { type: 'programme-verified', deviceId: 'living-room',
+      profileId: 'home', programme: programme(20), confirmedAt: 2000 });
+    expect(next.devices['living-room']).toMatchObject({ status: 'confirmed', error: null, confirmedProfile: 'home' });
+  });
+
+  test('rejects a stale saved template or verification during an active upload', () => {
+    const state = configuredState();
+    const verify = { type: 'programme-verified' as const, deviceId: 'living-room', profileId: 'home' as const,
+      programme: programme(20), confirmedAt: 2000 };
+    const edited = reduceThermostatProfiles(state, { type: 'set-programme', deviceId: 'living-room',
+      profileId: 'home', programme: programme(21) });
+    expect(() => reduceThermostatProfiles(edited, verify)).toThrow('saved programme changed');
+    expect(() => reduceThermostatProfiles(start(state), verify)).toThrow('upload is in progress');
+  });
+});
+
 describe('validateThermostatWeeklyProgramme', () => {
   test('accepts four constant-temperature periods for a possible Holiday profile', () => {
     expect(validateThermostatWeeklyProgramme(programme(10))).toEqual(programme(10));

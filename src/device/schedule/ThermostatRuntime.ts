@@ -236,6 +236,7 @@ export default class ThermostatRuntime extends EventEmitter {
             confirmedAt: profiles?.confirmedAt ?? null,
             applyingProfile: profiles?.inFlight?.profileId ?? null,
             queuedProfile: this.pending.get(device.id) ?? null,
+            lastAttemptedProfile: job?.requestedProfile ?? null,
             confirmationMatchesRequested,
             error: job?.error ?? profiles?.error,
           },
@@ -343,10 +344,25 @@ export default class ThermostatRuntime extends EventEmitter {
       }
       case '/schedules/read': {
         const ids = this.deviceIds(body.deviceIds);
+        const selected = body.verifyProfile === undefined ? undefined : profileId(body.verifyProfile);
+        const programmes = new Map<string, ThermostatWeeklyProgramme>();
         for (const id of ids) {
           if (this.running.has(id)) {
             throw new Error('A selected thermostat already has an operation in progress.');
           }
+          if (selected) {
+            this.requireAvailable(id, true);
+            this.requireNoOverride(id);
+            const saved = this.state.devices[id]?.programmes[selected];
+            if (!saved) {
+              throw new Error('Save a complete programme for every selected room before verifying it.');
+            }
+            programmes.set(id, validateThermostatWeeklyProgramme(saved));
+          }
+        }
+        if (selected) {
+          ids.forEach(id => this.launchVerifyProfile(id, selected, programmes.get(id)!));
+          return this.view();
         }
         ids.forEach(id => this.launch(id, 'reading', async () => {
           const snapshot = await this.schedules.read(id);
@@ -636,18 +652,49 @@ export default class ThermostatRuntime extends EventEmitter {
           type: 'apply-failed', deviceId: id, operationId, error: message(error), mayHaveChangedDevice,
         }), true);
         this.jobs.set(id, { status: mayHaveChangedDevice && failureStatus !== 'conflict' ? 'partial' : failureStatus,
+          requestedProfile: selected,
           error: message(error) });
       }
-    });
+    }, selected);
   }
 
-  private launch(id: string, status: string, task: () => Promise<void>) {
+  /** Reconcile a saved profile with fresh device evidence; never upload or change mode. */
+  private launchVerifyProfile(id: string, selected: ThermostatProfileId, expectedProgramme: ThermostatWeeklyProgramme) {
+    this.launch(id, 'verifying', async () => {
+      this.requireAvailable(id, true);
+      this.requireNoOverride(id);
+      const snapshot = await this.schedules.read(id);
+      this.snapshots.set(id, snapshot);
+      await this.readSettings(id);
+      this.requireSevenDayMode(id);
+      if (!snapshot.fingerprint || JSON.stringify(snapshot.state.days) !== JSON.stringify(stateFor(expectedProgramme).days)) {
+        throw new Error('The programme on the thermostat does not match the saved programme. No changes were sent.');
+      }
+      if (this.nativeSettings.get(id)?.mode !== 'smart') {
+        throw new Error('The saved programme matches, but the thermostat is not in Scheduled mode. No changes were sent.');
+      }
+      await this.updateState(state => {
+        this.requireAvailable(id, true);
+        this.requireNoOverride(id);
+        if (this.closed) {
+          throw new Error('Homebridge stopped before programme verification finished.');
+        }
+        const next = reduceThermostatProfiles(state, { type: 'programme-verified', deviceId: id,
+          profileId: selected, programme: expectedProgramme, confirmedAt: Date.now() });
+        this.history.recordProgramme(id, { source: 'native', programme: expectedProgramme });
+        return next;
+      });
+      this.jobs.set(id, { status: 'verified', requestedProfile: selected, completedAt: Date.now() });
+    }, selected);
+  }
+
+  private launch(id: string, status: string, task: () => Promise<void>, requestedProfile?: ThermostatProfileId) {
     if (this.running.has(id)) {
       throw new Error('A thermostat operation is already in progress.');
     }
-    this.jobs.set(id, { status });
+    this.jobs.set(id, { status, ...(requestedProfile ? { requestedProfile } : {}) });
     const promise = Promise.resolve().then(task).catch(error => {
-      this.jobs.set(id, { status: 'failed', error: message(error) });
+      this.jobs.set(id, { status: 'failed', error: message(error), ...(requestedProfile ? { requestedProfile } : {}) });
       this.log.warn('Thermostat operation failed: %s', message(error));
     }).finally(() => {
       this.running.delete(id);

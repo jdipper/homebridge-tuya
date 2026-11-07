@@ -47,6 +47,8 @@ export type ThermostatProfilesAction =
   | { type: 'holiday'; enabled: boolean }
   | { type: 'apply-started'; deviceId: string; operationId: string; profileId?: ThermostatProfileId }
   | { type: 'apply-confirmed'; deviceId: string; operationId: string; programme: ThermostatWeeklyProgramme; confirmedAt: number }
+  | { type: 'programme-verified'; deviceId: string; profileId: ThermostatProfileId;
+    programme: ThermostatWeeklyProgramme; confirmedAt: number }
   | { type: 'apply-failed'; deviceId: string; operationId: string; error: string; mayHaveChangedDevice: boolean };
 
 const PROFILE_IDS: readonly ThermostatProfileId[] = ['home', 'away', 'holiday'];
@@ -273,6 +275,21 @@ export function reduceThermostatProfiles(state: ThermostatProfilesState, action:
         ...(action.mayHaveChangedDevice ? { confirmedProfile: null, confirmedProgramme: null, confirmedAt: null } : {}),
         inFlight: null, status: action.mayHaveChangedDevice ? 'partial' : 'failed', error: action.error,
       });
+    }
+    case 'programme-verified': {
+      const device = getDevice(state, action.deviceId);
+      validateProfileId(action.profileId);
+      const programme = validateThermostatWeeklyProgramme(action.programme);
+      if (device.inFlight || !sameProgramme(programme, device.programmes[action.profileId])) {
+        throw new Error('The saved programme changed or an upload is in progress. Verify it again.');
+      }
+      if (!Number.isSafeInteger(action.confirmedAt) || action.confirmedAt < 0) {
+        throw new Error('Thermostat confirmation time must be a non-negative integer timestamp.');
+      }
+      return replaceDevice(state, action.deviceId, withRequestedProfile({
+        ...device, confirmedProfile: action.profileId, confirmedProgramme: programme,
+        confirmedAt: action.confirmedAt, error: null, status: 'idle',
+      }, device.requestedProfile, true));
     }
   }
 }

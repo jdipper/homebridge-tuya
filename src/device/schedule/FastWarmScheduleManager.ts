@@ -28,12 +28,16 @@ export interface FastWarmScheduleApplyResult {
   applied: number;
   error?: string;
   unknownOutcome?: boolean;
+  /** Readback inquiries attempted after the writes; these never replay a programme command. */
+  verificationReads?: number;
 }
 
 export interface FastWarmScheduleManagerOptions {
   readTimeoutMs?: number;
   commandTimeoutMs?: number;
   freshnessToleranceMs?: number;
+  verificationAttempts?: number;
+  verificationDelayMs?: number;
 }
 
 interface ReadSession {
@@ -58,6 +62,39 @@ function normalizeTimestamp(value: unknown): number | undefined {
 
 function fingerprint(state: FastWarmScheduleState): string {
   return createHash('sha256').update(JSON.stringify(state.days.map(day => [day.day, day.events]))).digest('hex');
+}
+
+function verificationDetails(snapshot: FastWarmScheduleSnapshot | undefined, draft: FastWarmScheduleState): string {
+  if (!snapshot) {
+    return 'No complete readback was available.';
+  }
+  const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const eventNames = ['Wake', 'Leave', 'Return', 'Sleep'];
+  const missing: string[] = [];
+  const different: string[] = [];
+  draft.days.forEach((day, dayIndex) => day.events.forEach(event => {
+    const actual = snapshot.state.days.find(item => item.day === day.day)?.events.find(item => item.event === event.event);
+    const label = `${dayNames[dayIndex]} ${eventNames[event.event]}`;
+    if (!actual) {
+      missing.push(label);
+    } else if (JSON.stringify(actual) !== JSON.stringify(event)) {
+      different.push(label);
+    }
+  }));
+  const describe = (labels: string[]) => labels.slice(0, 3).join(', ') + (labels.length > 3 ? ', …' : '');
+  const details: string[] = [];
+  if (missing.length) {
+    details.push(`${missing.length} missing ${missing.length === 1 ? 'period' : 'periods'} (${describe(missing)})`);
+  }
+  if (different.length) {
+    details.push(`${different.length} differing ${different.length === 1 ? 'period' : 'periods'} (${describe(different)})`);
+  }
+  if (snapshot.errors.length) {
+    details.push(snapshot.errors.join(' '));
+  } else if (snapshot.timedOut) {
+    details.push('the latest inquiry timed out');
+  }
+  return details.length ? details.join('; ') + '.' : 'The latest readback did not establish an acknowledged complete programme.';
 }
 
 /** Validate and copy the whole draft before queueing any work or making any network call. */
@@ -96,6 +133,9 @@ export default class FastWarmScheduleManager {
   private readTimeoutMs: number;
   private commandTimeoutMs: number;
   private freshnessToleranceMs: number;
+  private verificationAttempts: number;
+  private verificationDelayMs: number;
+  private verificationDelays = new Set<() => void>();
 
   constructor(
     private api: TuyaOpenAPI,
@@ -106,9 +146,15 @@ export default class FastWarmScheduleManager {
     this.readTimeoutMs = options.readTimeoutMs ?? 30000;
     this.commandTimeoutMs = options.commandTimeoutMs ?? 15000;
     this.freshnessToleranceMs = options.freshnessToleranceMs ?? 2000;
+    this.verificationAttempts = options.verificationAttempts ?? 3;
+    this.verificationDelayMs = options.verificationDelayMs ?? 1000;
     if (![this.readTimeoutMs, this.commandTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0)
       || !Number.isSafeInteger(this.freshnessToleranceMs) || this.freshnessToleranceMs < 0) {
       throw new Error('Schedule timeouts must be positive integers and freshness tolerance must be nonnegative.');
+    }
+    if (!Number.isSafeInteger(this.verificationAttempts) || this.verificationAttempts < 1 || this.verificationAttempts > 3
+      || !Number.isSafeInteger(this.verificationDelayMs) || this.verificationDelayMs < 0 || this.verificationDelayMs > 60000) {
+      throw new Error('Schedule verification requires 1 to 3 attempts and a delay from 0 to 60000 milliseconds.');
     }
     this.mq.addRawMessageListener(this.onRawReport);
   }
@@ -172,23 +218,39 @@ export default class FastWarmScheduleManager {
       }
 
       let readback: FastWarmScheduleSnapshot | undefined;
+      let verificationReads = 0;
+      const targetFingerprint = fingerprint(draft);
       try {
-        readback = await this.readInternal(deviceId);
+        // Tuya's command acknowledgement can precede the thermostat applying its
+        // final event. Repeat only the inquiry, never any programme or mode write.
+        do {
+          if (verificationReads > 0) {
+            await this.waitForVerification(deviceId);
+          }
+          this.requireDevice(deviceId);
+          verificationReads++;
+          readback = await this.readInternal(deviceId);
+          if (writeError || readback.fingerprint === targetFingerprint) {
+            break;
+          }
+        } while (verificationReads < this.verificationAttempts);
       } catch (error) {
         writeError = writeError ?? errorText(error);
       }
       if (writeError) {
         return {
           status: applied > 0 ? 'partial' : 'failed', backup, readback, planned: commands.length, applied,
-          error: writeError, unknownOutcome,
+          error: writeError, unknownOutcome, verificationReads,
         };
       }
-      if (readback?.fingerprint === fingerprint(draft)) {
-        return { status: 'verified', backup, readback, planned: commands.length, applied };
+      if (readback?.fingerprint === targetFingerprint) {
+        return { status: 'verified', backup, readback, planned: commands.length, applied, verificationReads };
       }
       return {
         status: 'unverified', backup, readback, planned: commands.length, applied,
-        error: 'The complete resulting programme could not be verified. Do not automatically retry.', unknownOutcome: true,
+        error: `The complete resulting programme could not be verified after ${verificationReads} readback `
+          + `${verificationReads === 1 ? 'attempt' : 'attempts'}: ${verificationDetails(readback, draft)} Do not automatically retry.`,
+        unknownOutcome: true, verificationReads,
       };
     });
   }
@@ -207,6 +269,22 @@ export default class FastWarmScheduleManager {
     for (const session of [...this.sessions.values()]) {
       session.finish(false, 'Schedule manager closed.');
     }
+    for (const finish of [...this.verificationDelays]) {
+      finish();
+    }
+  }
+
+  private waitForVerification(deviceId: string): Promise<void> {
+    this.requireDevice(deviceId);
+    return new Promise(resolve => {
+      const finish = () => {
+        clearTimeout(timer);
+        this.verificationDelays.delete(finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, this.verificationDelayMs);
+      this.verificationDelays.add(finish);
+    });
   }
 
   private enqueue<T>(deviceId: string, operation: () => Promise<T>): Promise<T> {

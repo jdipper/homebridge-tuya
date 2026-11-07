@@ -1,6 +1,6 @@
 import path from 'path';
 
-const { householdProgrammeIntent, householdProgrammeContext, roomProgrammeFeedback, buildProgrammeFeedback } = require(
+const { savedProgrammeVerification, householdProgrammeIntent, householdProgrammeContext, roomProgrammeFeedback, buildProgrammeFeedback } = require(
   path.join(__dirname, '../homebridge-ui/public/schedule.js'),
 );
 
@@ -114,6 +114,80 @@ describe('programme confirmation feedback', () => {
     room.online = false;
     expect(roomProgrammeFeedback(room, options).title).toBe('Offline · no programme requested');
   });
+
+  test('a manual upload failure retains the attempted profile without inventing household intent', () => {
+    const room = { ...confirmedRoom(), enabled: false };
+    Object.assign(room.sync, { status: 'partial', profileStatus: 'partial', requestedProfile: null,
+      lastAttemptedProfile: 'holiday', confirmationMatchesRequested: false, error: 'One period did not match.' });
+    expect(roomProgrammeFeedback(room, options)).toMatchObject({
+      kind: 'attention', title: 'Holiday needs attention', requestedProfile: null,
+    });
+    expect(buildProgrammeFeedback(household([room]), options).counts.total).toBe(0);
+    Object.assign(room.sync, { status: 'applying', profileStatus: 'applying', error: undefined });
+    expect(roomProgrammeFeedback(room, options).title).toBe('Applying Holiday');
+  });
+
+  test('manual-operation labels do not replace the household programme being requested', () => {
+    const room = confirmedRoom();
+    Object.assign(room.sync, { status: 'failed', lastAttemptedProfile: 'holiday', error: 'Could not finish the comparison.' });
+    const feedback = roomProgrammeFeedback(room, options);
+    expect(feedback.title).toBe('Holiday needs attention');
+    expect(feedback.detail).toContain('Home remains requested');
+    expect(feedback.requestedProfile).toBe('home');
+    expect(buildProgrammeFeedback(household([room]), options).profile).toBe('home');
+  });
+
+  test('explicit verification shows read-only progress over an earlier failure without claiming success', () => {
+    const room = confirmedRoom();
+    Object.assign(room.sync, { status: 'verifying', profileStatus: 'partial', lastAttemptedProfile: 'holiday',
+      error: 'An earlier read-back did not match.', confirmationMatchesRequested: false });
+    const feedback = roomProgrammeFeedback(room, options);
+    expect(feedback).toMatchObject({ kind: 'checking', title: 'Verifying saved Holiday' });
+    expect(feedback.detail).toContain('no programme upload or mode change');
+    expect(buildProgrammeFeedback(household([room]), options).counts.confirmed).toBe(0);
+    expect(buildProgrammeFeedback(household([room]), options).title).toContain('Checking programmes · Home requested');
+    Object.assign(room.sync, { status: 'reading', profileStatus: 'pending', error: undefined });
+    expect(roomProgrammeFeedback(room, options).title).toBe('Checking Home');
+    expect(roomProgrammeFeedback(room, options).detail).not.toContain('Scheduled mode only');
+  });
+});
+
+describe('read-only verification controls', () => {
+  const savedWeek = () => ({ days: [1, 2, 4, 8, 16, 32, 64].map(day => ({ day,
+    events: [
+      { event: 0, hour: 6, minute: 0, temperature: 20 },
+      { event: 1, hour: 8, minute: 0, temperature: 12 },
+      { event: 2, hour: 17, minute: 0, temperature: 20 },
+      { event: 3, hour: 22, minute: 0, temperature: 12 },
+    ],
+  })) });
+
+  test('compares exactly the selected saved profile using the existing read route payload', () => {
+    const room = { ...confirmedRoom(), profiles: { home: savedWeek(), holiday: savedWeek() } };
+    const before = JSON.stringify(room);
+    expect(savedProgrammeVerification(room, 'holiday', options)).toEqual({
+      allowed: true, reason: '', request: { deviceIds: ['hall'], verifyProfile: 'holiday' },
+    });
+    expect(JSON.stringify(room)).toBe(before);
+  });
+
+  test.each(['missing-profile', 'incomplete-profile', 'dirty-draft', 'offline-room', 'offline-controller', 'verifying', 'applying', 'reading', 'pending-request', 'active-override', 'override-recovery'])(
+    '%s prevents a new verification instead of uploading or comparing an invented draft', failure => {
+      const room = { ...confirmedRoom(), profiles: { home: savedWeek() } };
+      const settings: { online: boolean; dirty?: boolean; pending?: boolean } = { online: true };
+      if (failure === 'missing-profile') Object.assign(room.profiles, { home: undefined });
+      if (failure === 'incomplete-profile') room.profiles.home.days[0].events.pop();
+      if (failure === 'dirty-draft') settings.dirty = true;
+      if (failure === 'offline-room') room.online = false;
+      if (failure === 'offline-controller') settings.online = false;
+      if (['verifying', 'applying', 'reading'].includes(failure)) room.sync.status = failure;
+      if (failure === 'pending-request') settings.pending = true;
+      if (failure === 'active-override') Object.assign(room, { override: { status: 'active' } });
+      if (failure === 'override-recovery') Object.assign(room, { override: { status: 'failed', recoveryRequired: true } });
+      expect(savedProgrammeVerification(room, 'home', settings)).toMatchObject({ allowed: false, request: null });
+      expect(savedProgrammeVerification(room, 'home', settings).reason).not.toBe('');
+    },
+  );
 });
 
 describe('household timing and priority', () => {

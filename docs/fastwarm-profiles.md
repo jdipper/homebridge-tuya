@@ -5,8 +5,10 @@ Smart WiFi 2.0 / ET-63 product `lmtejj3f4kafi2k1`. Automated tests use simulated
 thermostats. A pilot on 7 November 2026 verified six measured room temperatures
 through HomeKit and a complete 28-period native programme read. A subsequent
 temporary-temperature test failed; new boosts/setbacks are disabled pending
-FastWarm Hold validation. Native weekly programme uploads and WAN outage
-execution still require hardware tests.
+FastWarm Hold validation. Holiday programme uploads were subsequently checked
+against all 28 native periods on all six rooms. Two first readbacks were one
+period behind; fresh read-only checks matched the complete saved programmes and
+confirmed Scheduled mode. WAN outage execution still requires a hardware test.
 
 ## Programme selection
 
@@ -126,6 +128,21 @@ remains visible. These results describe the last verified application, rather
 than continuous monitoring of changes made at the physical controller. Apple
 Home's switches continue to show household selection; progress appears here in
 Homebridge.
+
+Tuya can acknowledge the final programme command before that event appears in a
+device readback. Following an acknowledged upload, verification makes up to three
+read-only inquiries, one second apart, until the complete programme matches.
+These follow-up checks never repeat a programme or mode write. An uncertain write
+error remains an error even if its diagnostic readback happens to match.
+
+To check a previous warning without uploading again, select the intended profile
+tab, open **Room details**, then choose **Verify saved Home/Away/Holiday
+programme**. This reads the thermostat and compares all 28 periods with that
+saved profile, checking Scheduled mode and seven-day programming. Only a complete
+match records a new confirmation and clears the earlier failure. Missing or
+edited drafts, offline rooms, active overrides and concurrent changes prevent a
+confirmation. This action does not change the thermostat's programme, mode,
+household selection or automatic enrollment.
 
 Each room has an IANA time zone. Planned times use the last complete programme
 and do not prove the physical controller's clock is correct. Check its weekday

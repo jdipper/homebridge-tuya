@@ -43,8 +43,12 @@ export function getFastWarmTemperatureReport(value: unknown): FastWarmTemperatur
 
   const timestamp = report.time ?? report.t;
   let time: number | undefined;
-  if (typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0) {
-    time = timestamp < 1e12 ? timestamp * 1000 : timestamp;
+  const number = typeof timestamp === 'string' && /^\d+$/.test(timestamp) ? Number(timestamp) : timestamp;
+  if (typeof number === 'number' && Number.isFinite(number) && number > 0) {
+    const milliseconds = Math.trunc(number < 1e12 ? number * 1000 : number);
+    if (Number.isSafeInteger(milliseconds)) {
+      time = milliseconds;
+    }
   }
   return { value: temperature, time };
 }

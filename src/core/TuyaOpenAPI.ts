@@ -297,8 +297,29 @@ export default class TuyaOpenAPI {
     return res;
   }
 
-  async request(method: string, path: string, params?, body?) {
-    await this._refreshAccessTokenIfNeed(path);
+  async request(method: string, path: string, params?, body?, options?: { attempts?: number; timeoutMs?: number }) {
+    const deadline = options?.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
+    if (options?.timeoutMs === undefined) {
+      await this._refreshAccessTokenIfNeed(path);
+    } else {
+      let authenticationTimer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          this._refreshAccessTokenIfNeed(path),
+          new Promise<never>((_resolve, reject) => {
+            authenticationTimer = setTimeout(() => reject(new Error('Tuya authentication deadline expired before transmission.')),
+              options.timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (authenticationTimer) {
+          clearTimeout(authenticationTimer);
+        }
+      }
+    }
+    if (deadline !== undefined && Date.now() >= deadline) {
+      throw new Error('Tuya request deadline expired before transmission.');
+    }
 
     const now = new Date().getTime();
     const nonce = uuidv4();
@@ -341,6 +362,9 @@ export default class TuyaOpenAPI {
           rawData += chunk;
         });
         res.on('end', () => {
+          if (timer) {
+            clearTimeout(timer);
+          }
           // Never leave the promise unsettled: a non-200 used to hang the
           // caller forever, which made API failures completely invisible.
           if (res.statusCode !== 200) {
@@ -363,16 +387,25 @@ export default class TuyaOpenAPI {
         });
       });
 
+      // An absolute timer also covers DNS/connect hangs. postOnce never retries
+      // a timed-out write: the device may already have accepted that command.
+      const timer = deadline === undefined ? undefined : setTimeout(() => {
+        req.destroy(new Error('Tuya request deadline expired; command outcome may be unknown.'));
+      }, Math.max(1, deadline - Date.now()));
+
       if (body) {
         req.write(JSON.stringify(body));
       }
 
       req.on('error', e => {
-        this.log.error('Network error: %s. Retrying...', e.message);
+        if (timer) {
+          clearTimeout(timer);
+        }
+        this.log.error(options?.attempts === 1 ? 'Network error: %s.' : 'Network error: %s. Retrying...', e.message);
         reject(e);
       });
       req.end();
-    }), undefined, {retriesMax: 10, interval: 100, exponential: true, factor: 2, jitter: 100});
+    }), undefined, {retriesMax: options?.attempts ?? 10, interval: 100, exponential: true, factor: 2, jitter: 100});
 
     this.log.debug('Response:\npath = %s\ndata = %s', path, JSON.stringify(redactSensitive(res), null, 2));
     if (res && res.success !== true && API_ERROR_MESSAGES[res.code]) {
@@ -388,6 +421,15 @@ export default class TuyaOpenAPI {
 
   async post(path: string, params?) {
     return this.request('post', path, null, params);
+  }
+
+  /** Single-attempt mutation with a deadline; callers must verify an uncertain result instead of retrying. */
+  async postOnce(path: string, body?, options: { timeoutMs?: number } = {}) {
+    const timeoutMs = options.timeoutMs ?? 15000;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new Error('Tuya single-attempt timeout must be a positive integer.');
+    }
+    return this.request('post', path, null, body, { attempts: 1, timeoutMs });
   }
 
   async delete(path: string, params?) {

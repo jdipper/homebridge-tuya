@@ -24,6 +24,7 @@ interface TuyaMQTTConfig {
 }
 
 type TuyaMQTTCallback = (topic: string, protocol: number, data) => void;
+type TuyaRawMQTTCallback = (topic: string, protocol: number, data, timestamp: number) => void;
 
 export default class TuyaOpenMQ {
 
@@ -31,6 +32,7 @@ export default class TuyaOpenMQ {
   public config?: TuyaMQTTConfig;
   public version: string;
   public messageListeners: Set<TuyaMQTTCallback>;
+  private rawMessageListeners: Set<TuyaRawMQTTCallback>;
   public linkId: string;
 
   public timer?: NodeJS.Timeout;
@@ -43,6 +45,7 @@ export default class TuyaOpenMQ {
   ) {
     this.version = '1.0';
     this.messageListeners = new Set();
+    this.rawMessageListeners = new Set();
     this.linkId = uuid_v4();
     this.consumedQueue = [];
     this.log = new PrefixLogger(logger(), TuyaOpenMQ.name, debug);
@@ -133,6 +136,16 @@ export default class TuyaOpenMQ {
     }
     const message = JSON.parse(messageData);
     this.log.debug('onMessage:\ntopic = %s\nprotocol = %s\nmessage = %s\nt = %s', topic, protocol, JSON.stringify(message, null, 2), t);
+
+    // A programme DP reports a sequence of chunks, not a scalar value. Give
+    // collectors the original payload before scalar out-of-order correction.
+    for (const listener of this.rawMessageListeners) {
+      try {
+        listener(topic, protocol, JSON.parse(messageData), t);
+      } catch (error) {
+        this.log.warn('Original MQTT report listener failed: %s', String(error));
+      }
+    }
 
     this._fixWrongOrderMessage(protocol, message, t);
 
@@ -247,6 +260,14 @@ export default class TuyaOpenMQ {
 
   removeMessageListener(listener: TuyaMQTTCallback) {
     this.messageListeners.delete(listener);
+  }
+
+  addRawMessageListener(listener: TuyaRawMQTTCallback) {
+    this.rawMessageListeners.add(listener);
+  }
+
+  removeRawMessageListener(listener: TuyaRawMQTTCallback) {
+    this.rawMessageListeners.delete(listener);
   }
 
 }

@@ -185,6 +185,22 @@ describe('FastWarm raw temperature support', () => {
     expect(getFastWarmTemperatureReport({ dpId: 105, value: 195, t: 1794025076 })?.time).toBe(1794025076000);
   });
 
+  test.each(['1794025076000', '1794025076'])('normalizes a legacy quoted timestamp %s', t => {
+    expect(getFastWarmTemperatureReport({ dpId: 105, value: 195, t })?.time).toBe(1794025076000);
+  });
+
+  test.each(['99999999999999999999', '1794025076e0', ' 1794025076', '-1794025076'])(
+    'does not trust malformed or unsafe quoted timestamps: %s', t => {
+      expect(getFastWarmTemperatureReport({ dpId: 105, value: 195, t })?.time).toBeUndefined();
+    },
+  );
+
+  test('rejects a stale room reading even when its timestamp is quoted', async () => {
+    await manager.enrichDeviceStatus(device);
+    await manager.onMQTTMessage('test', 4, { devId: device.id, status: [{ dpId: 105, value: 180, t: String(NOW - 1000) }] });
+    expect(device.status.find(status => status.code === 'temp_current')?.value).toBe(195);
+  });
+
   test.each(['home', 'custom', 'single'])('hydrates before returning a device from %s discovery', async kind => {
     if (kind === 'home') {
       const home = new TuyaHomeDeviceManager(api);

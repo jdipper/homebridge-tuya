@@ -27,11 +27,22 @@ including activation of scheduled mode. The UI does not automatically apply
 drafts, including after reconnection. Reads and applies run in the platform;
 closing this editor does not stop them.
 
-Room cards show measured and target temperature separately, the last reading,
-and the current/next planned programme period. Programme editors, native
-programme reports, temporary temperatures and histories are collapsed initially;
-their open state and unsaved fields survive status polling. Room display names
-are local aliases, so the original SmartLife name remains visible for matching.
+Compact room cards show measured and target temperatures, mode and draft status.
+The individual editor and Room details are collapsed initially; diagnostics,
+native reports and histories live inside Room details. Open state and unsaved
+fields survive status polling. Labels use a local alias when set, otherwise the
+SmartLife room assignment, then the device name. Refresh explicitly reloads room
+assignments; routine status polling does not call the room APIs. Use SmartLife
+room clears an alias without renaming the device or changing HomeKit identity.
+
+Load stored programmes reads each selected room's own native programme into an
+unsaved draft. With no selection it reads all rooms. Import requires a fresh,
+verified complete 28-period report. Edit programme for all rooms opens one shared
+editor with an explicit source room and separate saved-draft/native-load controls.
+Saving makes independent copies for selected rooms and preserves enrollment.
+Neither importing nor saving uploads a heating programme; review and apply is
+separate and requires complete saved drafts.
+
 Planned transitions do not imply that the plugin has read the controller's
 internal clock; its weekday and clock need checking against the configured IANA
 time zone.
@@ -82,6 +93,7 @@ discovered. The relay removes this routing field before forwarding the body.
 | --- | --- |
 | `/instances` | No payload; returns `{ instances: [{ id }] }` |
 | `/thermostats` | No payload |
+| `/rooms/refresh` | No payload; refreshes SmartLife room assignments |
 | `/schedules/read` | `{ deviceIds }` |
 | `/profiles/save` | `{ deviceId, profile, schedule, enabled }` |
 | `/schedules/apply` | `{ deviceIds, profile, preview: true }`, then `{ previewId }` |

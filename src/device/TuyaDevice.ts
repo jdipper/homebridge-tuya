@@ -111,6 +111,9 @@ export default class TuyaDevice {
   lat!: string;
   lon!: string;
   time_zone!: string;
+  /** SmartLife room metadata; separate from the device's own name. */
+  room_id?: string;
+  room_name?: string;
 
   // time
   create_time!: number;

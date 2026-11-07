@@ -125,6 +125,19 @@ export default class TuyaDeviceManager extends EventEmitter {
     return [];
   }
 
+  /** Home projects can enrich devices without changing their HomeKit identity or name. */
+  async refreshDeviceRooms(): Promise<void> {
+    // Custom/asset projects do not have SmartLife rooms.
+  }
+
+  protected enrichDeviceRoom(device: TuyaDevice): void {
+    const previous = this.getDevice(device.id);
+    if (previous?.owner_id === device.owner_id) {
+      device.room_id = previous.room_id;
+      device.room_name = previous.room_name;
+    }
+  }
+
   async updateDevice(deviceID: string) {
 
     const res = await this.getDeviceInfo(deviceID);
@@ -133,6 +146,7 @@ export default class TuyaDeviceManager extends EventEmitter {
     }
 
     const device = new TuyaDevice(res.result);
+    this.enrichDeviceRoom(device);
     device.schema = await this.getDeviceSchema(deviceID);
     await this.enrichDeviceStatus(device);
 

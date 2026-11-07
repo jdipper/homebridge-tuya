@@ -130,10 +130,13 @@ Garage door controllers that keep `switch_1=true` can opt in to contact-sensor-o
 
 #### FastWarm thermostat programmes (experimental)
 
-For supported FastWarm ET-63 thermostats, the configuration page includes a shared
-weekly programme editor. Each room can have separate Home, Away and Holiday
-temperature programmes. Apple Home household automations select Home/Away;
-Holiday takes priority until switched off. See [setup, behaviour and current
+For supported FastWarm ET-63 thermostats, the configuration page shows compact
+room cards using SmartLife room names, with optional local name overrides. Each
+room can have Home, Away and Holiday temperature programmes. Load each
+thermostat's stored programme into its own draft, or edit one shared programme
+for all or selected rooms. Saving drafts and reviewing/applying them are separate
+steps; loading does not change the heating. Apple Home household automations
+select Home/Away, with Holiday taking priority. See [setup, behaviour and current
 hardware-validation limits](docs/fastwarm-profiles.md).
 
 ## Limitations

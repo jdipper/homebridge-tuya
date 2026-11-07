@@ -12,7 +12,9 @@ describe('Private thermostat runtime IPC', () => {
   const call = (token: string, body = '{}', method = 'POST') => new Promise<{ status: number; body: unknown }>((resolve, reject) => {
     const operation = request({
       socketPath: descriptor.socketPath, path: '/thermostats', method,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      // Frame even a deliberately unsupported GET body. Node does not add
+      // chunked framing for GET, so an unframed body can race the early 405.
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
     }, response => {
       let data = '';
       response.setEncoding('utf8');

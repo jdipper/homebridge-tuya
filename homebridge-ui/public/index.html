@@ -1,11 +1,11 @@
-<link rel="stylesheet" href="schedule.css?v=45289db5152d">
+<link rel="stylesheet" href="schedule.css?v=e2ce32d87886">
 
 <div id="tuya-schedules" class="tuya-schedules">
   <header class="schedule-header">
     <div>
       <div class="schedule-eyebrow">TUYA HEATING</div>
       <h2>Rooms &amp; schedules</h2>
-      <p>Keep the weekly programme on each thermostat. Use Home and Away profiles when your household comes and goes.</p>
+      <p>See each room at a glance, then prepare and apply weekly programmes together.</p>
     </div>
     <button id="refresh" class="schedule-button" type="button">Refresh</button>
   </header>
@@ -39,8 +39,8 @@
 
     <div class="profile-toolbar">
       <div>
-        <h3>Weekly profiles</h3>
-        <p>Editing a draft does not change the heating. Review and apply when ready.</p>
+        <h3>Weekly programmes</h3>
+        <p>Choose a profile and rooms, prepare a draft, then review and apply.</p>
       </div>
       <div class="schedule-tabs profile-tabs" role="tablist" aria-label="Schedule profile">
         <button class="schedule-tab active" data-profile="home" type="button" role="tab" aria-selected="true">Home</button>
@@ -49,10 +49,19 @@
       </div>
     </div>
 
-    <div class="bulk-actions">
-      <label class="select-all"><input id="select-all" type="checkbox"> Select all thermostats</label>
-      <button id="apply-selected" class="schedule-button primary" type="button" disabled>Review &amp; apply selected</button>
-    </div>
+    <section class="programme-workflow" aria-label="Programme preparation">
+      <div class="workflow-intro"><strong>1. Choose profile &amp; rooms</strong><span>2. Load or edit drafts</span><span>3. Save, review &amp; apply</span></div>
+      <div class="bulk-actions">
+        <div class="selection-summary"><label class="select-all"><input id="select-all" type="checkbox"> All rooms</label><span id="selection-count" class="schedule-help">No rooms selected</span></div>
+        <button id="edit-all" class="schedule-button primary" type="button">Edit programme for all rooms</button>
+      </div>
+      <div class="bulk-actions programme-actions">
+        <div class="bulk-secondary"><button id="load-stored" class="schedule-button" type="button">Load stored programmes</button><button id="save-selected" class="schedule-button" type="button" disabled>Save selected drafts</button></div>
+        <button id="apply-selected" class="schedule-button primary" type="button" disabled>Review &amp; apply selected</button>
+      </div>
+      <p id="bulk-help" class="schedule-help">Loading reads each room’s programme into its own draft. Drafts do not change the heating.</p>
+    </section>
+    <section id="shared-editor" class="shared-editor" aria-labelledby="shared-editor-title" hidden></section>
     <div id="thermostats" class="thermostat-list" aria-live="polite"></div>
     <p class="schedule-footnote">Programme uploads and new profile changes need a working Tuya connection. Last-read programmes and saved drafts remain available here on your local network. Incomplete and unverified programmes are shown explicitly.</p>
   </main>
@@ -71,4 +80,4 @@
   </section>
 </div>
 
-<script src="schedule.js?v=590080333cd4"></script>
+<script src="schedule.js?v=66b786199e5b"></script>

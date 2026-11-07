@@ -37,9 +37,9 @@
 .bulk-actions { margin: 14px 0; flex-wrap: wrap; }
 .select-all, .room-selection { font-size: .86rem; display: flex; align-items: center; gap: 8px; margin: 0; }
 .tuya-schedules input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--schedule-accent); }
-.thermostat-list { display: grid; gap: 18px; }
+.thermostat-list { display: grid; gap: 12px; }
 .thermostat-card { border: 1px solid var(--schedule-border); border-radius: 10px; overflow: hidden; }
-.thermostat-card-header { padding: 16px; border-bottom: 1px solid var(--schedule-border); }
+.thermostat-card-header { padding: 14px 16px; border-bottom: 1px solid var(--schedule-border); }
 .thermostat-title { align-items: flex-start; }
 .thermostat-title h3 { margin: 0; }
 .thermostat-subtitle { margin-top: 5px !important; }
@@ -49,11 +49,11 @@
 .status-badge.verified, .status-badge.online { color: #17685d; background: rgba(23,104,93,.13); }
 .status-badge.partial, .status-badge.offline { color: #916015; background: rgba(180,130,40,.14); }
 .status-badge.failed { color: #ab3e35; background: rgba(190,60,50,.12); }
-.thermostat-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding-top: 16px; }
+.thermostat-stats { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 12px; padding-top: 12px; }
 .stat-label { color: var(--schedule-muted); font-size: .73rem; display: block; margin-bottom: 4px; }
-.stat-value { font-weight: 600; font-size: 1.03rem; }
+.stat-value { font-weight: 600; font-size: .92rem; }
 .stat-value.temperature { font-size: 1.4rem; font-weight: 500; }
-.thermostat-body { padding: 16px; }
+.thermostat-body { padding: 0 16px; }
 .thermostat-actions { margin-bottom: 12px; flex-wrap: wrap; }
 .thermostat-actions > div { display: flex; gap: 7px; flex-wrap: wrap; }
 .schedule-help { margin-bottom: 12px !important; }
@@ -129,6 +129,34 @@
 .version-comparison > summary { font-weight: 400; font-size: .78rem; color: var(--schedule-muted); }
 .version-comparison ul { margin: 8px 0 0; padding-left: 20px; max-height: 200px; overflow: auto; }
 .recovery-notice { grid-column: 1 / -1; }
+.programme-workflow { border: 1px solid var(--schedule-border); border-radius: 9px; padding: 14px 16px; margin-bottom: 16px; }
+.workflow-intro { display: flex; gap: 20px; flex-wrap: wrap; font-size: .8rem; color: var(--schedule-muted); }
+.workflow-intro strong { color: inherit; font-weight: 650; }
+.selection-summary, .bulk-secondary { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.selection-summary .schedule-help { margin: 0 !important; }
+.programme-actions { border-top: 1px solid var(--schedule-border); padding-top: 12px; }
+.programme-workflow > .schedule-help { margin-bottom: 0 !important; }
+.shared-editor { border: 2px solid var(--schedule-accent); border-radius: 9px; padding: 18px; margin-bottom: 18px; scroll-margin-top: 12px; }
+.shared-editor .thermostat-actions h3 { font-size: 1.02rem; }
+.shared-source { padding: 10px 0; }
+.shared-source .control-field { min-width: 180px; }
+.shared-editor > .schedule-notice { margin-top: 12px; margin-bottom: 0 !important; }
+.thermostat-body > .room-details { margin: 0; padding: 11px 0; }
+.thermostat-body > .room-details:first-child { border-top: 0; }
+.thermostat-body > .room-details > summary { font-size: .8rem; color: var(--schedule-muted); }
+.thermostat-body > .programme-editor { padding-top: 0; }
+.thermostat-body > .programme-editor:not([open]) { display: none; }
+.thermostat-body > .programme-editor[open] { padding-top: 14px; }
+.thermostat-body > .programme-editor[open] > summary { margin-bottom: 12px; }
+.room-setting-group { border-top: 1px solid var(--schedule-border); padding-top: 14px; margin-top: 14px; }
+.room-setting-group h4 { font-size: .88rem; font-weight: 650; margin: 0 0 10px; }
+.room-setting-group .schedule-notice { margin-bottom: 10px !important; }
+.draft-empty { border: 1px dashed var(--schedule-border); background: var(--schedule-accent-soft); border-radius: 8px; padding: 14px; margin: 12px 0 16px; font-size: .88rem; }
+.draft-empty .schedule-help { margin: 5px 0 10px !important; }
+.room-warning { color: #916015; font-size: .81rem; line-height: 1.5; margin-top: 9px !important; }
+.thermostat-card-header > .status-badge { display: inline-block; margin-top: 9px; }
+.thermostat-title .schedule-button { font-size: .78rem; padding: 7px 10px; }
+.room-diagnostics .now-next { padding-top: 0; }
 @media (prefers-color-scheme: dark) {
   .tuya-schedules { --schedule-accent: #64c5b2; --schedule-accent-soft: rgba(85,181,161,.12); --schedule-muted: #a7afb2; }
   .schedule-button.primary { background: #26796b; border-color: #26796b; }
@@ -136,13 +164,31 @@
   .status-badge.verified, .status-badge.online { color: #72d2bd; }
   .status-badge.partial, .status-badge.offline, .draft-status.unsaved { color: #e5ba70; }
   .status-badge.failed { color: #ef9b92; }
+  .room-warning { color: #e5ba70; }
 }
 @media (max-width: 650px) {
   .schedule-header { gap: 8px; }
   .tuya-schedules h2 { font-size: 1.45rem; }
   .presence-actions .schedule-button { font-size: .79rem; }
-  .thermostat-stats { grid-template-columns: repeat(2, 1fr); }
-  .thermostat-card-header, .thermostat-body { padding: 12px; }
+  .thermostat-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .thermostat-card-header { padding: 12px; }
+  .thermostat-body { padding: 0 12px; }
+  .thermostat-title { align-items: center; flex-wrap: wrap; }
+  .thermostat-title .room-selection { flex: 1; min-width: 160px; }
+  .thermostat-title h3 { font-size: 1rem; }
+  .thermostat-title .schedule-button { white-space: normal; max-width: 150px; }
+  .stat-value.temperature { font-size: 1.2rem; }
+  .stat-label { font-size: .68rem; }
+  .stat-value { font-size: .8rem; }
+  .programme-workflow { padding: 12px; }
+  .workflow-intro { gap: 6px 14px; font-size: .74rem; }
+  .programme-workflow .bulk-actions { align-items: stretch; }
+  .programme-workflow .schedule-button { white-space: normal; }
+  .programme-workflow .bulk-actions > .schedule-button { width: 100%; }
+  .bulk-secondary { width: 100%; gap: 8px; }
+  .bulk-secondary .schedule-button { flex: 1; }
+  .shared-editor { padding: 12px; }
+  .shared-source > .schedule-button { flex: 1; white-space: normal; }
   .apply-preview { padding: 8px; }
   .apply-preview-card { padding: 16px; }
   #household-options { grid-template-columns: 1fr; gap: 14px; }

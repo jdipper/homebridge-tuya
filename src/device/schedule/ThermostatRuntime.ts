@@ -196,7 +196,9 @@ export default class ThermostatRuntime extends EventEmitter {
           day: day.day, events: day.events,
         })) }, settings) : undefined;
         return {
-          id: device.id, name: settings.name ?? device.name, deviceName: device.name, online: device.online,
+          id: device.id, name: settings.name ?? device.room_name ?? device.name, deviceName: device.name, online: device.online,
+          roomName: device.room_name, nameSource: settings.name ? 'custom' : device.room_name ? 'smartlife' : 'device',
+          customName: settings.name,
           timeZone: settings.timeZone, clockVerified: settings.clockVerified, nowNext,
           temperatureReceivedAt: observation?.receivedAt, temperatureReportedAt: observation?.reportedAt,
           temperatureSource: observation?.source,
@@ -263,6 +265,9 @@ export default class ThermostatRuntime extends EventEmitter {
     }
     switch (route) {
       case '/thermostats':
+        return this.view();
+      case '/rooms/refresh':
+        await this.manager.refreshDeviceRooms();
         return this.view();
       case '/rooms/save': {
         const id = this.deviceId(body.deviceId);
@@ -721,11 +726,10 @@ export default class ThermostatRuntime extends EventEmitter {
     if (!isThermostatTimeZone(source.timeZone)) {
       throw new Error('Choose a valid IANA time zone, such as Europe/London.');
     }
-    if (source.name !== undefined && (typeof source.name !== 'string' || source.name.trim().length === 0
-      || source.name.length > 80)) {
-      throw new Error('Room name must contain between 1 and 80 characters.');
+    if (source.name !== undefined && (typeof source.name !== 'string' || source.name.length > 80)) {
+      throw new Error('Room name must contain no more than 80 characters.');
     }
-    return { name: typeof source.name === 'string' ? source.name.trim() : undefined,
+    return { name: typeof source.name === 'string' ? source.name.trim() || undefined : undefined,
       timeZone: source.timeZone, clockVerified: source.clockVerified };
   }
 
@@ -936,7 +940,8 @@ export default class ThermostatRuntime extends EventEmitter {
   }
 
   private deviceIdToName(id: string) {
-    return this.roomSettings[id]?.name ?? this.manager.getDevice(id)?.name ?? id;
+    const device = this.manager.getDevice(id);
+    return this.roomSettings[id]?.name ?? device?.room_name ?? device?.name ?? id;
   }
 
   private celsius(device: TuyaDevice) {

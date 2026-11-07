@@ -136,7 +136,7 @@ async function configure(runtime: ThermostatRuntime, automatic = false) {
 
 async function preview(runtime: ThermostatRuntime, profile: ThermostatProfileId = 'home') {
   const result = await runtime.handle('/schedules/apply', { preview: true, deviceIds: ['room-a'], profile });
-  return (result as unknown as { preview: { id: string; devices: { id: string; profile: string; changes: number }[] } }).preview;
+  return (result as unknown as { preview: { id: string; devices: { id: string; name: string; profile: string; changes: number }[] } }).preview;
 }
 
 afterEach(async () => {
@@ -603,6 +603,38 @@ describe('temporary overrides', () => {
 });
 
 describe('local room and programme history', () => {
+  test('uses SmartLife rooms before device names and keeps manual aliases first', async () => {
+    const { runtime } = await fixture();
+    const device = runtime.manager.getDevice('room-a')!;
+    expect(room(runtime)).toMatchObject({ name: 'room-a', nameSource: 'device' });
+    device.room_name = 'Living Room';
+    expect(room(runtime)).toMatchObject({ name: 'Living Room', roomName: 'Living Room', nameSource: 'smartlife', deviceName: 'room-a' });
+    await runtime.handle('/rooms/save', { deviceId: 'room-a', name: 'Sitting Room' });
+    expect(room(runtime)).toMatchObject({ name: 'Sitting Room', roomName: 'Living Room', nameSource: 'custom', deviceName: 'room-a' });
+    await configure(runtime);
+    expect((await preview(runtime)).devices[0].name).toBe('Sitting Room');
+    const before = room(runtime);
+    await runtime.handle('/rooms/save', { deviceId: 'room-a', name: '' });
+    expect(room(runtime)).toMatchObject({ name: 'Living Room', nameSource: 'smartlife',
+      timeZone: before.timeZone, clockVerified: before.clockVerified, profiles: before.profiles });
+    expect((await preview(runtime)).devices[0].name).toBe('Living Room');
+    expect(device.name).toBe('room-a');
+  });
+
+  test('refreshes rooms only on an explicit request, leaving normal view polling cloud-free', async () => {
+    const { runtime, transport } = await fixture();
+    const refresh = jest.fn(async () => { runtime.manager.getDevice('room-a')!.room_name = 'Living Room'; });
+    runtime.manager.refreshDeviceRooms = refresh;
+    await runtime.handle('/thermostats', {});
+    await runtime.handle('/thermostats', {});
+    expect(refresh).not.toHaveBeenCalled();
+    const result = await runtime.handle('/rooms/refresh', {});
+    expect(result).toMatchObject({ thermostats: expect.arrayContaining([{ ...room(runtime), name: 'Living Room' }]) });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(transport.read).not.toHaveBeenCalled();
+    expect(transport.apply).not.toHaveBeenCalled();
+  });
+
   test('room aliases and clock confirmation are local; restoring a programme changes only its draft', async () => {
     const { runtime, transport } = await fixture();
     await runtime.handle('/rooms/save', { deviceId: 'room-a', name: 'Kitchen', timeZone: 'Europe/London', clockVerified: true });

@@ -8,7 +8,7 @@ const http = require('node:http');
 
 const ROUTES = [
   '/thermostats', '/schedules/read', '/schedules/apply', '/profiles/save', '/presence', '/holiday',
-  '/controls/settings', '/rooms/save', '/presence/hold', '/overrides/preview', '/overrides/start',
+  '/controls/settings', '/rooms/save', '/rooms/refresh', '/presence/hold', '/overrides/preview', '/overrides/start',
   '/overrides/cancel', '/profiles/history', '/profiles/restore', '/history', '/temperatures/history',
   '/controls/recover',
 ];

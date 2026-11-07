@@ -47,32 +47,60 @@ resulting switch state, not anyone's location.
 ## Editor
 
 Open the plugin's configuration page in Homebridge. **Thermostats** shows measured
-and target temperatures, last-read native programmes and saved profile drafts.
+and target temperatures and the selected profile's draft status in compact room
+cards. Each room's programme editor and **Room details** are collapsed until
+opened. Details contain the current/next planned period, reading times, native
+programme, clock settings and histories. Household options are also collapsible.
 **Settings** retains the existing Homebridge configuration form.
 
-1. Read the programme from each thermostat. A partial response stays partial;
-   unknown events are never filled with guessed values.
-2. Copy the complete native programme into a profile or enter all seven days.
+Room headings use the room assigned in SmartLife, falling back to the device name
+when no room is available. **Refresh** also refreshes these room assignments. In
+**Room details**, a custom room name overrides the SmartLife room; save a blank
+custom name to follow SmartLife again. These display changes do not rename the
+SmartLife device, move it between rooms or change its accessory identity. A device
+ID suffix distinguishes rooms with identical display names.
+
+To start from the programmes already on the thermostats:
+
+1. Choose **Home**, **Away** or **Holiday**. Select the rooms to work on, or leave
+   none selected to load every room.
+2. Choose **Load stored programmes**. Each thermostat is read independently and
+   its complete programme loads into its own draft for the selected profile.
+   This preserves differences between rooms. A partial or unverified read leaves
+   the draft unchanged; missing periods are never guessed. An empty room editor
+   also offers **Load programme from thermostat** for just that room.
+3. Open a room's programme editor to change its four daily temperature periods.
    Copy controls can duplicate a day, profile or room's programme.
-3. Save the draft. Saving does not send it to a thermostat.
-4. Review and apply the selected profile. The preview lists event changes;
-   applying it uploads the programme and explicitly activates scheduled (Smart)
-   mode. Changes are checked using a fresh device readback.
-5. Save all three profiles before enabling that room for automatic household
-   selection. Enrollment itself does not upload a programme. The next explicit
-   presence/Holiday change selects the saved profile.
+4. Choose **Save selected drafts**, or **Save draft** in one room, to retain the
+   drafts in Homebridge. Loading and saving do not change the heating. Unsaved
+   drafts remain only in the open page until saved or the editor is closed.
+
+To prepare one programme for several rooms, choose **Edit programme for all
+rooms**. This selects every room and opens one shared editor; use the room
+checkboxes to narrow the selection if needed. Choose a source under **Start from
+room**, then **Use this room's draft** or **Load programme from thermostat**.
+The latter reads only that source thermostat into the shared editor. Edit once,
+then choose **Save programme for N rooms** to save an independent copy for each
+selected room. Other rooms' drafts remain unchanged. This differs from **Load
+stored programmes**, which imports each room's own programme separately.
+
+To send saved drafts to the thermostats, choose **Review & apply selected**, or
+**Review & apply** in one room. The preview lists each room's changed periods.
+Only the final **Apply programme changes** action uploads them and activates
+scheduled (Smart) mode. Each result is checked with a fresh device readback.
+
+Save all three profiles before enabling a room for automatic household selection.
+Enrollment itself does not upload a programme. The next explicit presence/Holiday
+change selects the saved profile.
 
 Manual application of one saved profile works before automatic enrollment. It
 does not change the household presence or Holiday selection. The editor shows
 requested and confirmed profiles separately, including saved changes that still
 need applying.
 
-Room aliases are local display names; SmartLife names and accessory identities
-are preserved. The dashboard shows the last reported and locally received
-temperature times, plus the current and next planned period from the last
-complete programme. Each room has an IANA time zone. Planned times do not prove
-the physical controller's clock is correct. Check its weekday and clock when
-interpreting these planned times.
+Each room has an IANA time zone. Planned times use the last complete programme
+and do not prove the physical controller's clock is correct. Check its weekday
+and clock when interpreting these planned times.
 
 ## Temporary temperatures
 

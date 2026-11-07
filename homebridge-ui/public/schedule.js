@@ -39,8 +39,47 @@ function buildTemperatureHistorySeries(points, measuredGapMs = 30 * 60000) {
   return { reports, ...series };
 }
 
+function scheduleRoomLabel(room, rooms = []) {
+  const name = room.name || room.roomName || room.deviceName || 'Thermostat';
+  return rooms.filter(item => (item.name || item.roomName || item.deviceName || 'Thermostat') === name).length > 1
+    ? `${name} · …${String(room.id).slice(-6)}` : name;
+}
+
+/** A partial native read is evidence, never a template for invented periods. */
+function copyCompleteNativeProgramme(schedule) {
+  const days = [1, 2, 4, 8, 16, 32, 64];
+  if (!schedule || schedule.complete !== true || !Array.isArray(schedule.days)
+    || schedule.days.length !== days.length) {
+    throw new Error('A complete programme with all 28 periods is required.');
+  }
+  const result = { days: days.map(day => {
+    const matches = schedule.days.filter(item => item.day === day);
+    if (matches.length !== 1 || matches[0].complete === false || !Array.isArray(matches[0].events) || matches[0].events.length !== 4) {
+      throw new Error('A complete programme with all 28 periods is required.');
+    }
+    let previous = -1;
+    return { day, events: [0, 1, 2, 3].map(event => {
+      const events = matches[0].events.filter(item => item.event === event);
+      const item = events[0];
+      if (events.length !== 1 || item.complete === false || !Number.isInteger(item.hour) || item.hour < 0 || item.hour > 23
+        || !Number.isInteger(item.minute) || item.minute < 0 || item.minute > 59
+        || !Number.isFinite(item.temperature) || item.temperature < 5 || item.temperature > 40
+        || !Number.isInteger(item.temperature * 2) || item.hour * 60 + item.minute <= previous) {
+        throw new Error('The programme contains an invalid or missing period.');
+      }
+      previous = item.hour * 60 + item.minute;
+      return { event, hour: item.hour, minute: item.minute, temperature: item.temperature };
+    }) };
+  }) };
+  return result;
+}
+
+function cloneProgrammeForRooms(schedule, deviceIds) {
+  return deviceIds.map(deviceId => ({ deviceId, schedule: JSON.parse(JSON.stringify(schedule)) }));
+}
+
 if (typeof module === 'object' && module.exports) {
-  module.exports = { buildTemperatureHistorySeries };
+  module.exports = { buildTemperatureHistorySeries, scheduleRoomLabel, copyCompleteNativeProgramme, cloneProgrammeForRooms };
 }
 
 (() => {
@@ -78,6 +117,9 @@ if (typeof module === 'object' && module.exports) {
     history: new Map(),
     versions: new Map(),
     readRequests: new Set(),
+    nativeImports: new Map(),
+    sharedEditors: new Map(),
+    sharedOpen: false,
   };
   const byId = id => document.getElementById(id);
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -100,6 +142,8 @@ if (typeof module === 'object' && module.exports) {
   };
   const draftKey = (id, profile = state.profile) => `${state.instanceId}:${id}:${profile}`;
   const thermostat = id => state.view.thermostats.find(room => room.id === id);
+  const roomLabel = room => scheduleRoomLabel(room, state.view.thermostats);
+  const selectedRooms = () => state.view.thermostats.filter(room => state.selected.has(room.id));
   const formatTemperature = value => typeof value === 'number' && Number.isFinite(value)
     ? `${value.toFixed(1)}°C` : 'Unavailable';
   const timeText = event => event && Number.isInteger(event.hour) && Number.isInteger(event.minute)
@@ -180,8 +224,8 @@ if (typeof module === 'object' && module.exports) {
     node.hidden = !text;
   }
 
-  async function request(path, payload = {}) {
-    return homebridge.request(path, { ...payload, instanceId: state.instanceId });
+  async function request(path, payload = {}, instanceId = state.instanceId) {
+    return homebridge.request(path, { ...payload, instanceId });
   }
 
   function normaliseSchedule(schedule) {
@@ -242,9 +286,38 @@ if (typeof module === 'object' && module.exports) {
 
   function updateSelection() {
     const rooms = state.view.thermostats;
-    byId('apply-selected').disabled = !state.selected.size || state.pending || !state.online;
+    const selected = selectedRooms();
+    const unsaved = selected.filter(room => getDraft(room).dirty);
+    const unsavedShared = state.sharedOpen && sharedDraft().dirty;
+    const missing = selected.filter(room => !room.profiles || !room.profiles[state.profile]
+      || validateSchedule(normaliseSchedule(room.profiles[state.profile])).length);
+    byId('apply-selected').disabled = !selected.length || unsavedShared || !!unsaved.length || !!missing.length || state.pending || !state.online;
     byId('select-all').checked = rooms.length > 0 && rooms.every(room => state.selected.has(room.id));
     byId('select-all').indeterminate = state.selected.size > 0 && !byId('select-all').checked;
+    byId('select-all').disabled = state.pending;
+    byId('selection-count').textContent = selected.length ? `${selected.length} of ${rooms.length} rooms selected` : 'No rooms selected';
+    byId('edit-all').disabled = !rooms.length || state.pending;
+    byId('load-stored').disabled = !rooms.length || state.pending || !state.online;
+    byId('load-stored').textContent = selected.length ? `Load stored programmes · ${selected.length} rooms` : 'Load stored programmes · all rooms';
+    byId('save-selected').disabled = !selected.some(room => getDraft(room).dirty) || state.pending || !state.online;
+    byId('apply-selected').textContent = selected.length ? `Review & apply · ${selected.length} rooms` : 'Review & apply selected';
+    byId('bulk-help').textContent = unsavedShared
+      ? 'Save the shared programme for selected rooms before reviewing. Closing the shared editor lets you review the saved room drafts.'
+      : unsaved.length
+      ? `Save the edited ${PROFILES[state.profile]} drafts before reviewing. Loading and editing do not change the heating.`
+      : missing.length
+        ? `${missing.length} selected room${missing.length === 1 ? ' needs' : 's need'} a complete saved ${PROFILES[state.profile]} programme. Load stored programmes or edit a programme for all rooms, then save.`
+        : selected.length
+          ? `Ready to review each room’s saved ${PROFILES[state.profile]} programme. Applying is a separate step after review.`
+          : 'Select rooms, or edit a programme for all rooms. Loading reads each room’s stored programme into its own draft.';
+    document.querySelectorAll('[data-profile]').forEach(tab => { tab.disabled = state.pending; });
+    const instanceSelector = byId('instance-selector');
+    if (instanceSelector) { instanceSelector.disabled = state.pending; }
+    const sharedSave = byId('save-shared');
+    if (sharedSave) {
+      sharedSave.disabled = !selected.length || state.pending || !state.online;
+      sharedSave.textContent = `Save programme for ${selected.length} room${selected.length === 1 ? '' : 's'}`;
+    }
   }
 
   function acceptView(view) {
@@ -262,9 +335,54 @@ if (typeof module === 'object' && module.exports) {
       }
     }
     if (completed.length) {
-      const failed = completed.some(room => !room.schedule || !room.schedule.complete);
-      showMessage(completed.map(room => `${room.name}: ${room.schedule && room.schedule.complete
-        ? 'all 28 programme periods received' : room.sync && room.sync.error || 'programme read finished with missing periods'}`).join('. '), failed ? 'error' : 'success');
+      let failed = completed.some(room => !room.schedule || !room.schedule.complete);
+      const loadedProfiles = new Set();
+      const sharedProfiles = new Set();
+      const results = completed.map(room => {
+        const pending = state.nativeImports.get(room.id);
+        if (!pending) {
+          return `${roomLabel(room)}: ${room.schedule && room.schedule.complete
+            ? 'all 28 programme periods received' : room.sync && room.sync.error || 'programme read finished with missing periods'}`;
+        }
+        state.nativeImports.delete(room.id);
+        try {
+          if (!room.lastUpdated || room.lastUpdated === pending.previousRead
+            || typeof room.scheduleFingerprint !== 'string' || !room.scheduleFingerprint.trim()) {
+            throw new Error(room.sync && room.sync.error || 'A fresh complete programme was not received; draft unchanged.');
+          }
+          const schedule = copyCompleteNativeProgramme(room.schedule);
+          if (pending.sharedKey) {
+            const shared = state.sharedEditors.get(pending.sharedKey);
+            if (shared) {
+              if (JSON.stringify(shared.schedule) !== pending.originalDraft) {
+                throw new Error('The shared draft was edited while reading; it has been kept.');
+              }
+              shared.schedule = schedule;
+              shared.dirty = true;
+              shared.sourceId = room.id;
+            }
+          } else {
+            const draft = getDraft(room, pending.profile);
+            if (JSON.stringify(draft.schedule) !== pending.originalDraft) {
+              throw new Error('The draft was edited while reading; it has been kept.');
+            }
+            draft.schedule = schedule;
+            draft.dirty = true;
+          }
+          (pending.sharedKey ? sharedProfiles : loadedProfiles).add(PROFILES[pending.profile]);
+          return null;
+        } catch (error) {
+          failed = true;
+          return `${roomLabel(room)}: ${error.message} Draft unchanged`;
+        }
+      }).filter(Boolean);
+      if (loadedProfiles.size) {
+        results.unshift(`Stored programmes loaded into ${Array.from(loadedProfiles).join(', ')} drafts. Save selected drafts when ready; heating is unchanged`);
+      }
+      if (sharedProfiles.size) {
+        results.unshift(`Stored programme loaded into the shared ${Array.from(sharedProfiles).join(', ')} editor. Edit and save it to selected rooms when ready; heating is unchanged`);
+      }
+      showMessage(results.join('. '), failed ? 'error' : 'success');
     }
     const activeDraft = document.activeElement && document.activeElement.dataset.focus;
     for (const room of view.thermostats) {
@@ -305,7 +423,7 @@ if (typeof module === 'object' && module.exports) {
       if (showProgress) {
         byId('refresh').disabled = true;
       }
-      acceptView(await request('/thermostats'));
+      acceptView(await request(showProgress ? '/rooms/refresh' : '/thermostats'));
       if (showProgress) {
         showMessage('Thermostat status refreshed.');
       }
@@ -352,6 +470,97 @@ if (typeof module === 'object' && module.exports) {
       await action('/schedules/read', { deviceIds: [room.id] }, `Reading ${room.name}. Programme reports may take a moment to arrive.`);
     } catch {
       state.readRequests.delete(room.id);
+    }
+  }
+
+  const sharedKey = () => `${state.instanceId}:${state.profile}`;
+  function sharedDraft() {
+    const key = sharedKey();
+    if (!state.sharedEditors.has(key)) {
+      state.sharedEditors.set(key, { schedule: null, sourceId: '', dirty: false });
+    }
+    return state.sharedEditors.get(key);
+  }
+
+  async function loadStoredProgrammes(deviceIds, intoShared = false) {
+    const rooms = deviceIds.map(thermostat).filter(Boolean);
+    if (!rooms.length || state.pending) { return; }
+    if (rooms.some(room => BUSY.has(room.sync && room.sync.status))) {
+      showMessage('Wait for the selected rooms’ current operation to finish, then load their programmes.', 'error');
+      return;
+    }
+    const dirty = intoShared ? sharedDraft().dirty : rooms.some(room => getDraft(room).dirty);
+    if (dirty && !window.confirm(`Replace the unsaved ${PROFILES[state.profile]} draft${intoShared || rooms.length === 1 ? '' : 's'} with freshly read thermostat programmes?`)) {
+      return;
+    }
+    for (const room of rooms) {
+      state.nativeImports.set(room.id, { profile: state.profile, previousRead: room.lastUpdated,
+        originalDraft: JSON.stringify(intoShared ? sharedDraft().schedule : getDraft(room).schedule),
+        sharedKey: intoShared ? sharedKey() : undefined });
+      state.readRequests.add(room.id);
+    }
+    try {
+      await action('/schedules/read', { deviceIds: rooms.map(room => room.id) },
+        `Reading ${rooms.length} thermostat${rooms.length === 1 ? '' : 's'}. Complete programmes will load into drafts; heating is unchanged.`);
+    } catch {
+      rooms.forEach(room => { state.nativeImports.delete(room.id); state.readRequests.delete(room.id); });
+    }
+  }
+
+  async function saveSelectedDrafts(sharedSchedule) {
+    const rooms = selectedRooms();
+    if (!rooms.length || state.pending) { return; }
+    const profile = state.profile;
+    const instanceId = state.instanceId;
+    const sharedAtStart = sharedSchedule ? sharedDraft() : undefined;
+    const sharedVersion = sharedSchedule ? JSON.stringify(sharedSchedule) : undefined;
+    if (sharedSchedule && validateSchedule(sharedSchedule).length) {
+      showMessage(validateSchedule(sharedSchedule)[0], 'error');
+      return;
+    }
+    if (sharedSchedule && rooms.some(room => getDraft(room).dirty)
+      && !window.confirm(`Replace unsaved ${PROFILES[profile]} drafts in the selected rooms with this shared programme?`)) {
+      return;
+    }
+    if (sharedSchedule) {
+      for (const copy of cloneProgrammeForRooms(sharedSchedule, rooms.map(room => room.id))) {
+        const draft = getDraft(thermostat(copy.deviceId), profile);
+        draft.schedule = copy.schedule;
+        draft.dirty = true;
+      }
+    }
+    const toSave = rooms.filter(room => getDraft(room, profile).dirty);
+    const invalid = toSave.find(room => validateSchedule(getDraft(room, profile).schedule).length);
+    if (invalid) {
+      showMessage(`${roomLabel(invalid)}: ${validateSchedule(getDraft(invalid, profile).schedule)[0]}`, 'error');
+      render();
+      return;
+    }
+    // Freeze routing, targets and contents before any save can refresh the view.
+    const plan = toSave.map(room => ({ deviceId: room.id, label: roomLabel(room), enabled: !!room.enabled,
+      draft: getDraft(room, profile), schedule: clone(getDraft(room, profile).schedule) }));
+    state.pending = true;
+    render();
+    const results = [];
+    let failed = false;
+    try {
+      for (const item of plan) {
+        try {
+          const view = await request('/profiles/save', { deviceId: item.deviceId, profile, schedule: item.schedule,
+            enabled: item.enabled }, instanceId);
+          if (state.instanceId === instanceId) { acceptView(view); }
+          if (JSON.stringify(item.draft.schedule) === JSON.stringify(item.schedule)) { item.draft.dirty = false; }
+          results.push(`${item.label}: saved`);
+        } catch (error) {
+          failed = true;
+          results.push(`${item.label}: ${error.message || 'save failed'} — draft kept unsaved`);
+        }
+      }
+      if (sharedAtStart && !failed && JSON.stringify(sharedAtStart.schedule) === sharedVersion) { sharedAtStart.dirty = false; }
+      showMessage(`${results.join('. ')}. Heating is unchanged. Review & apply selected when ready.`, failed ? 'error' : 'success');
+    } finally {
+      state.pending = false;
+      render();
     }
   }
 
@@ -465,21 +674,20 @@ if (typeof module === 'object' && module.exports) {
 
   function roomTools(room) {
     const tools = element('div', 'room-tools');
-    const rename = details(`${room.id}:name`, 'Room name');
+    const rename = element('section', 'room-setting-group');
+    rename.append(element('h4', '', 'Room name & clock'));
     const form = element('div', 'inline-controls');
-    const name = field('Display name', `${room.id}:name`, { value: room.name, maxLength: 80 });
+    const name = field('Custom display name (optional)', `${room.id}:name`, {
+      value: room.customName || '', placeholder: room.roomName || room.deviceName || room.name, maxLength: 80,
+    });
     form.append(name.wrapper, button('Save name', async () => {
       const value = name.input.value.trim();
-      if (!value) {
-        showMessage('Enter a room name.', 'error');
-        return;
-      }
       try {
-        await action('/rooms/save', { deviceId: room.id, name: value }, 'Room display name saved.');
+        await action('/rooms/save', { deviceId: room.id, name: value }, value ? 'Custom room name saved.' : 'SmartLife room name restored.');
         forgetForm(`${room.id}:name`);
       } catch { /* The action displays the error. */ }
     }));
-    rename.append(form, element('p', 'last-confirmed', `SmartLife device: ${room.sourceName || room.deviceName || room.name} · …${room.id.slice(-6)}`));
+    rename.append(form, element('p', 'last-confirmed', `SmartLife room: ${room.roomName || 'Not assigned'} · device: ${room.sourceName || room.deviceName || room.name} · …${room.id.slice(-6)}. Leave the custom name blank to follow SmartLife.`));
     const clock = room.scheduleClock || {};
     const zone = field('Thermostat time zone (IANA name)', `${room.id}:clock:zone`, {
       value: room.timeZone || clock.timeZone || room.nowNext && room.nowNext.timeZone || '', placeholder: 'Europe/London',
@@ -497,7 +705,7 @@ if (typeof module === 'object' && module.exports) {
         return;
       }
       try {
-        await action('/rooms/save', { deviceId: room.id, name: room.name, timeZone, clockVerified: true }, 'Thermostat time zone and clock confirmation saved.');
+        await action('/rooms/save', { deviceId: room.id, name: room.customName || '', timeZone, clockVerified: true }, 'Thermostat time zone and clock confirmation saved.');
         forgetForm(`${room.id}:clock`);
       } catch { /* The action displays the error. */ }
     }));
@@ -506,7 +714,8 @@ if (typeof module === 'object' && module.exports) {
 
     const override = room.override || {};
     const activeOverride = override.status && !['idle', 'completed', 'cancelled', 'failed'].includes(override.status);
-    const temporary = details(`${room.id}:override`, 'Temporary temperature');
+    const temporary = element('section', 'room-setting-group');
+    temporary.append(element('h4', '', 'Temporary temperature'));
     temporary.append(element('p', 'schedule-notice', 'Unavailable pending FastWarm Hold validation. A live test did not apply and resume the requested temperature correctly, so new temporary temperatures are disabled.'));
     if (activeOverride) {
       temporary.append(element('p', 'override-state', `${STATUSES[override.status] || override.status} · ${formatTemperature(override.temperature)}${override.endsAt ? ` until ${formatDate(override.endsAt)}` : ''}`));
@@ -704,9 +913,14 @@ if (typeof module === 'object' && module.exports) {
     getDraft(room).dirty = true;
     status.textContent = 'Unsaved changes';
     status.classList.add('unsaved');
+    updateSelection();
   }
 
-  function editorTable(room, draft, status) {
+  function editorTable(room, draft, status, options = {}) {
+    const label = options.label || roomLabel(room);
+    const profile = options.profile || state.profile;
+    const key = options.key || draftKey(room.id, profile);
+    const changed = options.onDirty || (() => markDraftDirty(room, status));
     const wrapper = element('div', 'schedule-grid-wrapper');
     const table = element('table', 'schedule-grid');
     const head = element('thead');
@@ -730,13 +944,14 @@ if (typeof module === 'object' && module.exports) {
         time.type = 'time';
         time.step = '60';
         time.value = timeText(event);
-        time.setAttribute('aria-label', `${room.name}, ${PROFILES[state.profile]}, ${DAYS[dayIndex].name} ${EVENTS[event.event]} time`);
-        time.dataset.focus = `${draftKey(room.id)}:${day.day}:${event.event}:time`;
+        time.setAttribute('aria-label', `${label}, ${PROFILES[profile]}, ${DAYS[dayIndex].name} ${EVENTS[event.event]} time`);
+        time.dataset.focus = `${key}:${day.day}:${event.event}:time`;
+        time.disabled = state.pending;
         time.addEventListener('input', () => {
           const match = /^(\d{2}):(\d{2})$/.exec(time.value);
           event.hour = match ? Number(match[1]) : null;
           event.minute = match ? Number(match[2]) : null;
-          markDraftDirty(room, status);
+          changed();
         });
         const temperature = element('input');
         temperature.type = 'number';
@@ -746,11 +961,12 @@ if (typeof module === 'object' && module.exports) {
         temperature.inputMode = 'decimal';
         temperature.placeholder = '—';
         temperature.value = typeof event.temperature === 'number' ? event.temperature : '';
-        temperature.setAttribute('aria-label', `${room.name}, ${PROFILES[state.profile]}, ${DAYS[dayIndex].name} ${EVENTS[event.event]} temperature in Celsius`);
-        temperature.dataset.focus = `${draftKey(room.id)}:${day.day}:${event.event}:temperature`;
+        temperature.setAttribute('aria-label', `${label}, ${PROFILES[profile]}, ${DAYS[dayIndex].name} ${EVENTS[event.event]} temperature in Celsius`);
+        temperature.dataset.focus = `${key}:${day.day}:${event.event}:temperature`;
+        temperature.disabled = state.pending;
         temperature.addEventListener('input', () => {
           event.temperature = temperature.value === '' ? null : Number(temperature.value);
-          markDraftDirty(room, status);
+          changed();
         });
         inputs.append(time, temperature, element('span', '', '°C'));
         cell.append(inputs);
@@ -814,7 +1030,7 @@ if (typeof module === 'object' && module.exports) {
     }));
     const sources = state.view.thermostats.filter(item => item.id !== room.id);
     if (sources.length) {
-      const source = selectOptions(sources.map(item => ({ value: item.id, label: item.name })), `Source room for ${room.name}`);
+      const source = selectOptions(sources.map(item => ({ value: item.id, label: roomLabel(item) })), `Source room for ${roomLabel(room)}`);
       controls.append(element('label', '', 'Copy room'), source, button('Copy profile', () => {
         draft.schedule = clone(getDraft(thermostat(source.value)).schedule);
         draft.dirty = true;
@@ -822,6 +1038,68 @@ if (typeof module === 'object' && module.exports) {
       }));
     }
     return controls;
+  }
+
+  function renderSharedEditor() {
+    const container = byId('shared-editor');
+    container.hidden = !state.sharedOpen;
+    container.replaceChildren();
+    if (!state.sharedOpen) { return; }
+    const draft = sharedDraft();
+    const heading = element('div', 'thermostat-actions');
+    const title = element('h3', '', `One ${PROFILES[state.profile]} programme for selected rooms`);
+    title.id = 'shared-editor-title';
+    heading.append(title, button('Close editor', () => { state.sharedOpen = false; render(); }));
+    container.append(heading, element('p', 'schedule-help', 'Start with one room’s draft or load its stored programme. Edit once, then save a separate copy for every selected room. Applying to the heating is a separate step.'));
+    const source = selectOptions(state.view.thermostats.map(room => ({ value: room.id, label: roomLabel(room) })), 'Programme source room');
+    if (state.view.thermostats.some(room => room.id === draft.sourceId)) { source.value = draft.sourceId; }
+    source.disabled = state.pending;
+    source.addEventListener('change', () => { draft.sourceId = source.value; });
+    const sources = element('div', 'inline-controls shared-source');
+    const sourceLabel = element('label', 'control-field');
+    sourceLabel.append(element('span', '', 'Start from room'), source);
+    const useSaved = button('Use this room’s draft', () => {
+      const room = thermostat(source.value);
+      const saved = getDraft(room);
+      if (validateSchedule(saved.schedule).length) {
+        showMessage(`${roomLabel(room)} has no complete ${PROFILES[state.profile]} draft. Load its stored programme instead.`, 'error');
+        return;
+      }
+      if (draft.dirty && !window.confirm('Replace the edited shared programme with this room’s draft?')) { return; }
+      draft.sourceId = room.id;
+      draft.schedule = clone(saved.schedule);
+      draft.dirty = true;
+      render();
+    });
+    sources.append(sourceLabel, useSaved, button('Load programme from thermostat', () => {
+      draft.sourceId = source.value;
+      loadStoredProgrammes([source.value], true).catch(() => {});
+    }));
+    container.append(sources);
+    if (!draft.schedule) {
+      container.append(element('p', 'schedule-notice', 'No shared programme loaded. Choose a room above and load its programme, or use a complete draft. Existing room programmes stay separate until you save this shared programme.'));
+      return;
+    }
+    const status = element('p', 'draft-status', draft.dirty ? 'Shared programme edited — not yet saved to rooms' : 'Shared draft ready — save it for the selected rooms');
+    const changed = () => {
+      draft.dirty = true;
+      status.textContent = 'Shared programme edited — not yet saved to rooms';
+      status.classList.add('unsaved');
+      updateSelection();
+    };
+    container.append(status, editorTable(null, draft, status, { label: 'Shared programme', key: `shared:${sharedKey()}`, onDirty: changed }));
+    const copyDay = selectOptions(DAYS.map(day => ({ value: day.id, label: day.name })), 'Source day in shared programme');
+    const copying = element('div', 'copy-actions');
+    copying.append(element('label', '', 'Copy day'), copyDay, button('To all days', () => {
+      const events = draft.schedule.days.find(day => day.day === Number(copyDay.value)).events;
+      draft.schedule.days.forEach(day => { day.events = clone(events); });
+      draft.dirty = true;
+      render();
+    }));
+    const save = button(`Save programme for ${state.selected.size} rooms`, () => saveSelectedDrafts(draft.schedule).catch(error => showMessage(error.message, 'error')), 'primary');
+    save.id = 'save-shared';
+    save.disabled = !state.selected.size || state.pending || !state.online;
+    container.append(copying, save, element('p', 'last-confirmed', 'Save creates drafts only. Use Review & apply selected to send them to the thermostats.'));
   }
 
   function renderRoom(room) {
@@ -832,60 +1110,71 @@ if (typeof module === 'object' && module.exports) {
     const checkbox = element('input');
     checkbox.type = 'checkbox';
     checkbox.checked = state.selected.has(room.id);
-    checkbox.setAttribute('aria-label', `Select ${room.name}`);
+    checkbox.disabled = state.pending;
+    checkbox.setAttribute('aria-label', `Select ${roomLabel(room)}`);
     checkbox.addEventListener('change', () => {
       checkbox.checked ? state.selected.add(room.id) : state.selected.delete(room.id);
       updateSelection();
+      renderSharedEditor();
     });
     const heading = element('div');
-    heading.append(element('h3', '', room.name));
+    heading.append(element('h3', '', roomLabel(room)));
     const sync = room.sync || { status: 'idle' };
     const confirmed = sync.confirmedProfile ? PROFILES[sync.confirmedProfile] || sync.confirmedProfile : 'Not confirmed';
-    const duplicateName = state.view.thermostats.filter(item => item.name === room.name).length > 1;
-    heading.append(element('p', 'thermostat-subtitle',
-      `${duplicateName ? `Device …${room.id.slice(-6)} · ` : ''}Last confirmed profile: ${confirmed}`));
+    heading.append(element('p', 'thermostat-subtitle', `${MODES[room.mode] || room.mode || 'Mode unknown'} · ${room.online ? 'Online' : 'Offline'}`));
     label.append(checkbox, heading);
-    title.append(label, statusBadge(room.online ? 'online' : 'offline', room.online ? 'Online' : 'Offline'));
+    const edit = button(`Edit ${PROFILES[state.profile]} programme`, () => {
+      const editor = Array.from(document.querySelectorAll('[data-detail]')).find(node => node.dataset.detail === `${room.id}:editor`);
+      if (editor) { editor.open = !editor.open; if (editor.open) { editor.querySelector('summary').focus(); } }
+    });
+    title.append(label, edit);
     const stats = element('div', 'thermostat-stats');
     appendStat(stats, room.online ? 'Room temperature' : 'Last reported room temperature', formatTemperature(room.currentTemperature), 'temperature');
     appendStat(stats, 'Set temperature', formatTemperature(room.targetTemperature));
-    const grouping = typeof room.grouping === 'number' ? (room.grouping & 1 ? '5+1+1 days' : 'Seven days') : 'Grouping unknown';
-    appendStat(stats, 'Thermostat programme', `${MODES[room.mode] || room.mode || 'Mode unknown'} · ${grouping}`);
-    const syncStat = element('div');
-    syncStat.append(element('span', 'stat-label', 'Programme sync'), statusBadge(sync.status || 'idle'));
-    stats.append(syncStat);
+    const draft = getDraft(room);
+    const hasDraft = !!(room.profiles && room.profiles[state.profile]);
+    const draftState = draft.dirty ? 'Unsaved changes' : hasDraft ? 'Saved draft' : 'No draft yet';
+    appendStat(stats, `${PROFILES[state.profile]} programme`, draftState);
     header.append(title, stats);
-    if (room.override && !['completed', 'failed', 'idle'].includes(room.override.status)) {
+    if (room.override && room.override.status && !['completed', 'cancelled', 'failed', 'idle'].includes(room.override.status)) {
       header.append(element('p', 'override-state', `Temporary temperature: ${formatTemperature(room.override.temperature)} until ${formatDate(room.override.endsAt)} · ${STATUSES[room.override.status] || room.override.status}`));
     }
-    header.append(nowAndNext(room));
-    const reportedAt = room.lastReportedAt ?? room.temperatureReportedAt;
-    const receivedAt = room.lastReceivedAt ?? room.temperatureReceivedAt;
-    header.append(element('p', 'last-confirmed', `Reading time: ${reportedAt ? formatDate(reportedAt) : 'device time unavailable'} · received locally: ${formatDate(receivedAt)}${room.telemetryAvailable === false ? ' · live telemetry unavailable' : ''}`));
-    header.append(element('p', 'last-confirmed', `Last programme read: ${formatDate(room.lastUpdated)}`));
-    if (sync.error) {
-      header.append(element('p', 'last-confirmed', sync.error));
+    if (BUSY.has(sync.status)) { header.append(statusBadge(sync.status)); }
+    if (sync.error || ['failed', 'partial', 'conflict'].includes(sync.status)) {
+      header.append(element('p', 'room-warning', sync.error || STATUSES[sync.status]));
+    }
+    if (room.override && (room.override.recoveryRequired || room.override.status === 'recovery-required')) {
+      header.append(element('p', 'room-warning', room.override.error || 'Programme restoration needs attention. Open Room details to retry.'));
     }
 
     const body = element('div', 'thermostat-body');
-    body.append(roomTools(room));
-    const editor = details(`${room.id}:editor`, `Edit ${PROFILES[state.profile]} programme`, 'programme-editor');
-    const draft = getDraft(room);
+    const editor = details(`${room.id}:editor`, `${PROFILES[state.profile]} programme · ${draftState}`, 'programme-editor');
     const draftStatus = element('span', `draft-status ${draft.dirty ? 'unsaved' : ''}`,
       draft.dirty ? 'Unsaved changes' : room.profiles && room.profiles[state.profile] ? 'Saved draft' : 'New draft');
     const actions = element('div', 'thermostat-actions');
     const draftTitle = element('div');
     draftTitle.append(element('h3', '', `${PROFILES[state.profile]} programme`), draftStatus);
     const buttons = element('div');
-    const readCurrent = button('Read programme', () => readProgramme(room));
-    readCurrent.disabled = BUSY.has(sync.status) || state.pending;
+    const review = button('Review & apply', () => prepareApply([room.id]).catch(error => showMessage(error.message, 'error')), 'primary');
+    review.disabled = state.pending || !state.online || draft.dirty || !hasDraft
+      || !!validateSchedule(normaliseSchedule(room.profiles && room.profiles[state.profile])).length;
     buttons.append(
       button('Save draft', () => saveDraft(room).catch(() => {})),
-      readCurrent,
-      button('Review & apply', () => prepareApply([room.id]).catch(error => showMessage(error.message, 'error')), 'primary'),
+      review,
     );
     actions.append(draftTitle, buttons);
     editor.append(actions, element('p', 'schedule-help', 'Four periods per day. Temperatures are in Celsius; each period continues until the next one.'));
+    const importAction = button('Load programme from thermostat', () => loadStoredProgrammes([room.id]).catch(() => {}));
+    importAction.disabled = BUSY.has(sync.status) || state.pending || !state.online;
+    if (!hasDraft && !draft.dirty) {
+      const empty = element('div', 'draft-empty');
+      empty.append(element('strong', '', `Start your ${PROFILES[state.profile]} draft`), element('p', 'schedule-help', 'Load the programme already stored on this thermostat, then edit it here. Loading does not change the heating.'), importAction);
+      editor.append(empty);
+    } else {
+      const importRow = element('div', 'copy-actions');
+      importRow.append(importAction, element('span', 'schedule-help', 'Read a fresh copy into this draft.'));
+      editor.append(importRow);
+    }
     if (typeof room.grouping === 'number' && (room.grouping & 1)) {
       editor.append(element('p', 'schedule-notice', 'The thermostat uses grouped 5+1+1 programming. Before applying a weekly profile, select seven-day programming in SmartLife and read the programme again. Grouping and adaptive-start settings are preserved by this editor.'));
     }
@@ -920,20 +1209,22 @@ if (typeof module === 'object' && module.exports) {
       : 'Home, Away and Holiday drafts are saved. Automatic changes upload the selected saved programme and activate scheduled (Smart) mode.'));
 
     body.append(editor);
+    const roomDetails = details(`${room.id}:details`, 'Room details', 'room-diagnostics');
+    roomDetails.append(nowAndNext(room));
+    const reportedAt = room.lastReportedAt ?? room.temperatureReportedAt;
+    const receivedAt = room.lastReceivedAt ?? room.temperatureReceivedAt;
+    roomDetails.append(element('p', 'last-confirmed', `Reading time: ${reportedAt ? formatDate(reportedAt) : 'device time unavailable'} · received locally: ${formatDate(receivedAt)}${room.telemetryAvailable === false ? ' · live telemetry unavailable' : ''}`));
+    roomDetails.append(element('p', 'last-confirmed', `Last confirmed profile: ${confirmed} · last programme read: ${formatDate(room.lastUpdated)} · ${typeof room.grouping === 'number' ? (room.grouping & 1 ? '5+1+1 days' : 'Seven days') : 'Grouping unknown'}`));
+    roomDetails.append(roomTools(room));
     const count = room.schedule && Array.isArray(room.schedule.missing) ? 28 - room.schedule.missing.length : 0;
     const native = details(`${room.id}:native`, `Programme on thermostat · ${room.schedule && room.schedule.complete ? 'complete' : `${count}/28 periods received`}`, 'native-programme');
     const nativeActions = element('div', 'thermostat-actions');
     const read = button(BUSY.has(sync.status) ? 'Operation in progress…' : 'Read programme', () => readProgramme(room));
     read.disabled = BUSY.has(sync.status) || state.pending;
-    const useNative = button('Copy into this draft', () => {
-      draft.schedule = normaliseSchedule(room.schedule);
-      draft.dirty = true;
-      render();
-    });
-    useNative.disabled = !(room.schedule && room.schedule.complete);
-    nativeActions.append(read, useNative);
+    nativeActions.append(read);
     native.append(element('p', 'last-confirmed', 'This is the programme reported by the device. Missing periods remain unknown.'), nativeActions, nativeTable(room.schedule));
-    body.append(native, temperatureHistory(room), programmeHistory(room));
+    roomDetails.append(native, temperatureHistory(room), programmeHistory(room));
+    body.append(roomDetails);
     card.append(header, body);
     return card;
   }
@@ -954,6 +1245,7 @@ if (typeof module === 'object' && module.exports) {
       container.append(card);
     });
     householdOptions();
+    renderSharedEditor();
     document.querySelectorAll('[data-detail]').forEach(node => { node.open = !!openDetails.get(node.dataset.detail); });
     if (focused) {
       const input = Array.from(document.querySelectorAll('[data-focus]')).find(node => node.dataset.focus === focused);
@@ -987,7 +1279,17 @@ if (typeof module === 'object' && module.exports) {
   }
 
   async function prepareApply(deviceIds) {
+    if (state.sharedOpen && sharedDraft().dirty) {
+      showMessage('Save the shared programme for selected rooms before reviewing, or close the shared editor to review the saved room drafts.', 'error');
+      return;
+    }
     const profile = state.profile;
+    const missing = deviceIds.map(thermostat).filter(room => !room || !room.profiles || !room.profiles[profile]
+      || validateSchedule(normaliseSchedule(room.profiles[profile])).length);
+    if (!deviceIds.length || missing.length) {
+      showMessage(`Load or create and save a complete ${PROFILES[profile]} programme for every selected room before reviewing.`, 'error');
+      return;
+    }
     const changed = deviceIds.filter(id => getDraft(thermostat(id), profile).dirty);
     if (changed.length) {
       showMessage('Save the edited drafts before reviewing programme changes.', 'error');
@@ -1010,8 +1312,8 @@ if (typeof module === 'object' && module.exports) {
     content.replaceChildren();
     for (const item of view.preview.devices) {
       const section = element('div', 'preview-room');
-      section.append(element('h4', '', `${item.name} · ${item.changes} period${item.changes === 1 ? '' : 's'} changed`));
       const room = thermostat(item.id);
+      section.append(element('h4', '', `${room ? roomLabel(room) : item.name} · ${item.changes} period${item.changes === 1 ? '' : 's'} changed`));
       const selectedProfile = item.profile || profile;
       const next = normaliseSchedule(room.profiles && room.profiles[selectedProfile]);
       const previous = normaliseSchedule(room.schedule);
@@ -1073,6 +1375,7 @@ if (typeof module === 'object' && module.exports) {
     byId('refresh').addEventListener('click', () => state.instanceId ? refresh() : discoverInstances());
     document.querySelectorAll('[data-profile]').forEach(tab => {
       tab.addEventListener('click', () => {
+        if (state.pending) { return; }
         state.profile = tab.dataset.profile;
         document.querySelectorAll('[data-profile]').forEach(other => {
           const active = other === tab;
@@ -1089,6 +1392,23 @@ if (typeof module === 'object' && module.exports) {
       }
       render();
     });
+    byId('edit-all').addEventListener('click', () => {
+      state.selected = new Set(state.view.thermostats.map(room => room.id));
+      const shared = sharedDraft();
+      if (!shared.schedule) {
+        const source = state.view.thermostats.find(room => !validateSchedule(getDraft(room).schedule).length);
+        if (source) { shared.sourceId = source.id; shared.schedule = clone(getDraft(source).schedule); shared.dirty = true; }
+      }
+      state.sharedOpen = true;
+      render();
+      byId('shared-editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    byId('load-stored').addEventListener('click', () => {
+      const ids = state.selected.size ? Array.from(state.selected) : state.view.thermostats.map(room => room.id);
+      if (!state.selected.size) { state.selected = new Set(ids); render(); }
+      loadStoredProgrammes(ids).catch(error => showMessage(error.message, 'error'));
+    });
+    byId('save-selected').addEventListener('click', () => saveSelectedDrafts().catch(error => showMessage(error.message, 'error')));
     byId('apply-selected').addEventListener('click', () => prepareApply(Array.from(state.selected)).catch(error => showMessage(error.message, 'error')));
     byId('cancel-apply').addEventListener('click', closePreview);
     byId('confirm-apply').addEventListener('click', async () => {
@@ -1135,6 +1455,9 @@ if (typeof module === 'object' && module.exports) {
         selector.addEventListener('change', () => {
           state.instanceId = selector.value;
           state.selected.clear();
+          state.sharedOpen = false;
+          state.nativeImports.clear();
+          state.readRequests.clear();
           refresh();
         });
         byId('schedules-view').prepend(selector);

@@ -17,8 +17,9 @@ guarantee.
 
 **New boosts remain disabled.** Both transport preview and start reject activation
 before any cloud read or write, with no configuration bypass. Explicit recovery
-remains available. This investigation added no heating commands, timer tasks,
-programme changes or network interruptions. Following explicit user approval,
+remains available. This investigation added no heating commands, programme
+changes or network interruptions. Non-heating timer metadata and online keypad
+execution probes were completed and cleaned up as recorded below. Following explicit user approval,
 Device Timer was subscribed and authorized for project Test2. The earlier
 controlled test below is historical evidence, not a successful boost validation.
 
@@ -62,6 +63,7 @@ properties are distinct from the plugin's standardized Tuya codes.
 | 102 | `SetTemp` | Temperature target, scale 1; 200 represents 20°C in Celsius mode. |
 | 103 | `ControlMode` | Thermostat `holiday`, `smart`, `hold`. |
 | 107 | `TemperUnitChange` | Boolean false is Celsius on this product. |
+| 108 | `Lock` | Native Boolean child lock: false is unlocked, true is locked. |
 | 119 | `week_program` | Thermostat heating programme, four events per day. |
 | 120 | `type` | `0` Thermostat, `1` Timer. |
 | 123 | `ControlMode2` | Explicitly described as Timer Holiday/Smart/Hold modes. |
@@ -106,9 +108,9 @@ it does not prove compatibility or countdown behaviour on these six devices.
   [Service listing](https://www.tuya.com/vas/commodity/DEVICE_TIMER).
 - After authorization, the public timer-list query succeeded for all six online
   thermostats. Each returned an empty list. This resolves API access but supplies
-  no existing task whose execution mode or device-download state can be examined.
-  No task was created or modified. Neither the current public query nor the
-  documented legacy query exposes a conclusive module-local capability flag.
+  no existing task whose execution mode or device-download state could be examined.
+  No task was created or modified at that stage. Neither the current public query
+  nor the documented legacy query exposes a conclusive module-local capability flag.
 - The legacy `GET /v1.0/devices/{device_id}/timers` query also succeeded for
   `…cdrjgm` and returned an empty list. These task lists are separate from the
   thermostat's native weekly heating programme; empty lists do not mean that
@@ -206,10 +208,10 @@ browser page cannot substitute for the SmartLife host.
 [MiniApp preview example](https://developer.tuya.com/cn/miniapp-codelabs/codelabs/panel-fan/index.html),
 [Product permissions](https://developer.tuya.com/cn/docs/iot-device-dev/sdj-device-access?id=Kb6jk4r5ma7uz).
 
-The remaining external dependency is Tuya confirmation of a supported API access
-route and this product's local-timer capability. The following inquiry is
-prepared for user review; submitting a support message requires explicit user
-authorization. Preparation is not a resolution of the capability gap.
+The following possible Tuya inquiry was prepared but not submitted. The user
+subsequently asked to hold off support and investigate independently. It remains
+on hold. App-side metadata is one possible evidence source, not a prerequisite
+for experimenting through the REST APIs already authorized.
 
 **Draft subject:** Device Timer: local execution metadata for SmartLife thermostats
 
@@ -249,6 +251,103 @@ alone is not yet a valid resume action: our earlier trace retained 20.5°C after
 returning to Smart. Neither multi-DP action ordering nor an exact end-to-end Hold
 sequence has been validated. Task download must be confirmed before beginning an
 indefinite Hold; uncertain activation or task outcomes must not be blindly retried.
+
+### Independent REST timer experiment
+
+After the user deferred support, a bounded metadata probe used the existing
+project API access. No extra app session, SDK app or credentials were needed.
+The diagnostic tool is `tools/fastwarm-timer-metadata-probe.cjs`; its default is
+GET-only preflight. Execution is restricted to the pilot suffix and verified
+product, requires both standard and native lock states to be false, and schedules
+only `Lock: false` seven days ahead at 12:00 Europe/London, with an explicit date
+and no weekly repetition. It never sends an immediate device command.
+
+Observed results:
+
+- The initial 23-character alias was rejected with `40004001`,
+  `alias_name param is illegal`. Adding documented JSON headers did not resolve
+  it. An 11-character alphanumeric alias passed that validation. This does not
+  establish the exact length or character restriction. The installed generic
+  client omits JSON content type, so the diagnostic signs its JSON mutations
+  directly with explicit content type and length.
+- Standard `child_lock` was rejected with `40004002`,
+  `child_lock, function is not exists`, despite its presence in the standard
+  writable-function list. The native model identifies the same child lock as
+  Boolean `Lock`, DP108. Native shadow readback was false.
+- A task with `functions: [{code: 'Lock', value: false}]` was accepted and given
+  a timer ID. V2 query returned native `Lock`; the legacy query returned
+  standardized `child_lock` for that same task. This establishes a working native
+  command-code route for this product's timer service, not a requirement for
+  every Tuya product.
+- Disabling the task returned a successful Boolean acknowledgement. Immediate
+  v2 query still showed `enable: true`, while the legacy timer had `status: 0`
+  under a group with `status: 1`. The responses did not agree on a simple enabled
+  interpretation; cache timing and group/task semantics have not been isolated.
+- Neither actual query response exposed a local/cloud execution mode or download
+  acknowledgement. The legacy response added group information and app-push
+  settings, not conclusive offline execution metadata.
+- Only the created timer was deleted, with its ID in both query and JSON body.
+  Subsequent all-task and category queries returned empty lists, matching the
+  baseline. No task remained, and no heating or immediate lock-state command was
+  sent. Rejected requests also had verified empty lists; uncertain creation is
+  never retried automatically.
+
+This removes the app-authentication gap as a prerequisite for creating and
+inspecting candidate timers. The experiment did not allow a timer to execute and
+does not establish offline operation or reliable Hold restoration. The next
+empirical step was the separately authorized online execution test below.
+Offline testing still needs a clear observation method and separate scope.
+App-side `runMode` metadata is optional additional evidence, not the only route
+to further investigation.
+
+[JSON request format](https://developer.tuya.com/en/docs/iot/api-request?id=Ka4a8uuo1j4t4),
+[Timer creation](https://developer.tuya.com/en/docs/cloud/767af4d3a5?id=Kconlt2n3pdnl),
+[Targeted deletion](https://developer.tuya.com/en/docs/cloud/14d8874380?id=Kconltpg9bpre).
+
+### Authorized online execution test
+
+The user approved a keypad-lock test lasting up to three minutes on `…cdrjgm`,
+with a timed unlock, immediate API unlock fallback, and verified cleanup. No
+temperature, programme or network change was authorized or performed.
+
+The `--execute-online` diagnostic mode created and verified a one-off native
+`Lock: false` timer before issuing `Lock: true` once. The task was never disabled
+before execution. The tool waited 15 seconds after creation, required at least
+60 seconds to remain before the deadline, and required timestamped lock reports
+newer than the pre-test value. Cleanup could delete the task only after a newer
+unlocked report; unresolved recovery would retain the scheduled unlock.
+
+All times below are UTC on 7 November 2026, also Europe/London local time that day.
+
+| Evidence | Time / result |
+| --- | --- |
+| Timer accepted | 14:26:28.335 |
+| Explicit native lock command attempted | 14:26:48.669 |
+| Cloud property/log timestamp for `Lock: true` | 14:26:49.023 |
+| Lock observed by GET | 14:26:52.054 |
+| Scheduled unlock deadline | 14:28:00.000 |
+| Cloud property/log timestamp for `Lock: false` | 14:28:03.903 |
+| Unlock observed by GET | 14:28:04.591 |
+| Final cleanup verified | 14:28:06.185; own timer absent and baseline list unchanged |
+| Immediate unlock fallback | Not used |
+
+This is successful online timed-execution evidence. The 3.903-second interval is
+from the scheduled deadline to a cloud report timestamp, not a measurement of
+the exact physical execution delay. Command/report logs agree with the lock
+transition. Two timing entries contained only event time, event ID, source and
+status; they exposed no local/cloud mode or download metadata. Their source
+value `2` must not be interpreted as local execution without a documented mapping.
+
+The thermostat was not disconnected from the internet. Offline operation and
+temperature-Hold restoration remain unverified, and user-facing boosts stay
+disabled. The remaining proof requires the thermostat itself to be offline at
+the deadline and a way to observe execution without mistaking a post-reconnect
+cloud command for an offline action. Blocking only Homebridge is insufficient.
+
+The diagnostic's offline simulations cover normal expiry with disk failure,
+missing execution and fallback, interruption, an uncertain lock with stale
+readback, and an unresolved stale-readback case that retains the unlock task.
+Run `node tools/test-fastwarm-timer-probe.cjs` without credentials or network.
 
 ### Direct LAN fallback (deferred)
 
@@ -293,11 +392,12 @@ demonstrated. Confirm both mode and target; Smart mode alone is insufficient.
 
 ## Staged validation plan
 
-The next unresolved capability cannot be established from the empty timer lists
-and timing logs. REST task creation and subsequent online execution could be
-tested through API calls, but successful responses alone would not establish
-offline expiry. The API-first route needs supported execution-mode/download
-metadata or product-specific confirmation before an offline claim can be made.
+The initial empty lists did not establish timer capability. The subsequent
+metadata and online tests establish native-code timer creation, online keypad
+execution and targeted cleanup.
+Successful configuration responses alone still do not establish offline expiry.
+The API-first route can proceed through controlled execution tests; metadata or
+product-specific confirmation would be useful additional evidence.
 A controlled, separately authorized test could use child lock ON then OFF on one
 identified thermostat, leaving its temperature and heating mode unchanged. An
 online test establishes only that scheduled commands work. Offline proof must
@@ -313,10 +413,11 @@ placement, observation and explicit recovery must be established before that tes
    task lists, query the first device's legacy list and timing logs, and retrieve
    the earlier test's command/report history. Keep credentials owner-only and
    out of reports.
-2. Establish a supported way to obtain app/panel timer metadata through APIs, or
-   obtain product-specific confirmation of local timer support. The currently
-   available REST project access does not establish this capability. Do not
-   treat named app RPCs as guessed public REST paths.
+2. Completed the independent REST metadata and online keypad probes above.
+   Native timer creation and observed online execution work without an app-side
+   session. Offline support and heating-Hold restoration remain unverified;
+   app/panel metadata is an optional further route. Do not treat named app RPCs
+   as guessed public REST paths.
 3. Seek a documented thermostat-specific countdown or native clear-override
    action rather than assuming Timer fields apply. Historical standardized
    temperature reports do not replace native mode evidence.

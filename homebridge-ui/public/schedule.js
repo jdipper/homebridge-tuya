@@ -493,7 +493,7 @@ if (typeof module === 'object' && module.exports) {
         showMessage('Enter a valid IANA time zone such as Europe/London.', 'error');
         return;
       }
-      if (!window.confirm(`Confirm that the clock and weekday shown on ${room.name} match ${timeZone}. This enables next-period expiry using that clock; it does not set the thermostat clock.`)) {
+      if (!window.confirm(`Confirm that the clock and weekday shown on ${room.name} match ${timeZone}. This records your confirmation; it does not set the thermostat clock.`)) {
         return;
       }
       try {
@@ -501,12 +501,13 @@ if (typeof module === 'object' && module.exports) {
         forgetForm(`${room.id}:clock`);
       } catch { /* The action displays the error. */ }
     }));
-    rename.append(clockForm, element('p', 'last-confirmed', 'Next changes are calculated from the programme and this time zone. Confirm the actual thermostat clock before using next-period expiry.'));
+    rename.append(clockForm, element('p', 'last-confirmed', 'Next changes are calculated from the programme and this time zone. Check the actual thermostat clock when interpreting these planned times.'));
     tools.append(rename);
 
     const override = room.override || {};
     const activeOverride = override.status && !['idle', 'completed', 'cancelled', 'failed'].includes(override.status);
     const temporary = details(`${room.id}:override`, 'Temporary temperature');
+    temporary.append(element('p', 'schedule-notice', 'Unavailable pending FastWarm Hold validation. A live test did not apply and resume the requested temperature correctly, so new temporary temperatures are disabled.'));
     if (activeOverride) {
       temporary.append(element('p', 'override-state', `${STATUSES[override.status] || override.status} · ${formatTemperature(override.temperature)}${override.endsAt ? ` until ${formatDate(override.endsAt)}` : ''}`));
       temporary.append(element('p', 'schedule-help', override.expiry === 'device'
@@ -522,37 +523,6 @@ if (typeof module === 'object' && module.exports) {
     } else if (override.status === 'failed' && override.error) {
       temporary.append(element('p', 'schedule-notice', override.error));
     }
-    const controls = element('div', 'inline-controls');
-    const temperature = field('Temperature (°C)', `${room.id}:override:temperature`, {
-      type: 'number', min: 5, max: 40, step: 0.5, value: room.targetTemperature ?? 20,
-    });
-    const expiry = field('Resume programme', `${room.id}:override:expiry`, {
-      value: '120', options: [
-        { value: '60', label: 'In 1 hour' }, { value: '120', label: 'In 2 hours' },
-        { value: '240', label: 'In 4 hours' }, { value: 'next-period', label: 'At next programme period', disabled: !(room.nowNext && room.nowNext.safeForExpiry) },
-        { value: 'custom', label: 'At a chosen time' },
-      ],
-    });
-    const until = field('Chosen end time', `${room.id}:override:until`, { type: 'datetime-local', value: dateInputValue(later(120)) });
-    until.wrapper.hidden = expiry.input.value !== 'custom';
-    expiry.input.addEventListener('change', () => { until.wrapper.hidden = expiry.input.value !== 'custom'; });
-    const review = button('Review temporary temperature', () => {
-      const target = Number(temperature.input.value);
-      const endsAt = expiry.input.value === 'next-period' ? 'next-period'
-        : expiry.input.value === 'custom' ? asTimestamp(until.input.value) : later(Number(expiry.input.value));
-      if (!Number.isFinite(target) || target < 5 || target > 40 || !Number.isInteger(target * 2)) {
-        showMessage('Enter a temperature from 5–40°C in 0.5°C steps.', 'error');
-        return;
-      }
-      if (endsAt !== 'next-period' && (!Number.isFinite(endsAt) || endsAt <= Date.now() || endsAt > later(24 * 60))) {
-        showMessage('Choose an end time within the next 24 hours.', 'error');
-        return;
-      }
-      prepareOverride(room, target, endsAt).catch(error => showMessage(error.message, 'error'));
-    });
-    review.disabled = !state.online || !room.online || state.pending || !!activeOverride || BUSY.has(room.sync && room.sync.status);
-    controls.append(temperature.wrapper, expiry.wrapper, until.wrapper, review);
-    temporary.append(controls, element('p', 'schedule-help', 'Review first. Starting a temporary temperature changes the thermostat target and mode; it does not rewrite the weekly programme.'));
     tools.append(temporary);
     return tools;
   }
@@ -1065,31 +1035,6 @@ if (typeof module === 'object' && module.exports) {
     byId('cancel-apply').focus();
   }
 
-  async function prepareOverride(room, temperature, endsAt) {
-    const view = await action('/overrides/preview', { deviceId: room.id, temperature, endsAt }, 'Review the temporary temperature before starting.');
-    const preview = view.overridePreview || view.preview;
-    if (!preview || !preview.id || !Number.isFinite(preview.endsAt)) {
-      throw new Error('The controller did not return a complete temporary-temperature preview.');
-    }
-    state.preview = { ...preview, kind: 'override' };
-    byId('preview-title').textContent = 'Review temporary temperature';
-    byId('preview-description').textContent = `${room.name}: ${formatTemperature(preview.temperature)} until ${formatDate(preview.endsAt)}.`;
-    byId('confirm-apply').textContent = 'Start temporary temperature';
-    byId('preview-notice').textContent = 'Homebridge will restore the scheduled programme at expiry. If Homebridge stops or the internet connection fails, Hold can continue beyond the chosen end time. Check the thermostat if restoration cannot be confirmed.';
-    const content = byId('preview-content');
-    content.replaceChildren();
-    content.append(element('p', 'schedule-help', `Current target: ${formatTemperature(room.targetTemperature)}. Starting this override changes the temperature and selects Hold mode. The weekly programme is retained.`));
-    for (const warning of preview.warnings || []) {
-      content.append(element('p', 'schedule-notice', String(warning)));
-    }
-    if (preview.warning) {
-      content.append(element('p', 'schedule-notice', preview.warning));
-    }
-    byId('apply-preview').hidden = false;
-    byId('confirm-apply').disabled = false;
-    byId('cancel-apply').focus();
-  }
-
   function closePreview() {
     state.preview = null;
     byId('apply-preview').hidden = true;
@@ -1151,13 +1096,9 @@ if (typeof module === 'object' && module.exports) {
         return;
       }
       const previewId = state.preview.id;
-      const override = state.preview.kind === 'override';
       byId('confirm-apply').disabled = true;
       try {
-        await action(override ? '/overrides/start' : '/schedules/apply', override
-          ? { previewId, acceptHostDependentExpiry: true } : { previewId }, override
-          ? 'Temporary temperature requested. Homebridge and the Tuya connection are needed to restore the programme at expiry.'
-          : 'Programme update started. Each thermostat will show its read-back result.');
+        await action('/schedules/apply', { previewId }, 'Programme update started. Each thermostat will show its read-back result.');
         closePreview();
       } catch {
         byId('confirm-apply').disabled = false;

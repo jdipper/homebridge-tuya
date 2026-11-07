@@ -32,16 +32,16 @@ and the current/next planned programme period. Programme editors, native
 programme reports, temporary temperatures and histories are collapsed initially;
 their open state and unsaved fields survive status polling. Room display names
 are local aliases, so the original SmartLife name remains visible for matching.
-Next-period expiry is available only after the user confirms the actual
-thermostat clock matches the configured IANA time zone. Planned transitions do
-not imply that the plugin has read the controller's internal clock.
+Planned transitions do not imply that the plugin has read the controller's
+internal clock; its weekday and clock need checking against the configured IANA
+time zone.
 
-Temporary temperatures have a separate immutable preview and explicit start
-confirmation. The confirmation explains that the plugin selects Hold and needs
-Homebridge plus internet to restore scheduled mode at expiry. A failed expiry
-can leave the Hold temperature active. Cancel/recovery requests restoration;
-the UI displays the verified outcome or recovery error rather than assuming it
-worked. A temporary temperature does not rewrite the weekly programme.
+New temporary temperatures are disabled pending FastWarm Hold validation. A live
+test on 7 November 2026 did not apply and resume the requested target correctly;
+the test thermostat was explicitly restored to Scheduled mode at 20°C. The panel
+shows the limitation and omits the activation form, while retaining restoration
+controls for any existing active/recovery record. API preview/start are also
+blocked, without an opt-in bypass. See [the programme guide](../docs/fastwarm-profiles.md).
 
 Household options configure an Away grace period (initially 30 minutes), a guest
 Home hold, and an optional Holiday return with a Home preheat lead. Timed

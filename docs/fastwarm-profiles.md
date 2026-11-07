@@ -2,9 +2,11 @@
 
 This branch contains an experimental schedule editor and runtime for the FastWarm
 Smart WiFi 2.0 / ET-63 product `lmtejj3f4kafi2k1`. Automated tests use simulated
-thermostats. A read-only pilot on 7 November 2026 verified six measured room
-temperatures through HomeKit and a complete 28-period native programme read.
-Reversible schedule/override writes and a WAN outage still require hardware tests.
+thermostats. A pilot on 7 November 2026 verified six measured room temperatures
+through HomeKit and a complete 28-period native programme read. A subsequent
+temporary-temperature test failed; new boosts/setbacks are disabled pending
+FastWarm Hold validation. Native weekly programme uploads and WAN outage
+execution still require hardware tests.
 
 ## Programme selection
 
@@ -69,26 +71,25 @@ Room aliases are local display names; SmartLife names and accessory identities
 are preserved. The dashboard shows the last reported and locally received
 temperature times, plus the current and next planned period from the last
 complete programme. Each room has an IANA time zone. Planned times do not prove
-the physical controller's clock is correct. Confirm its weekday and clock before
-using next-period override expiry; ambiguous daylight-saving transitions cannot
-be used for that expiry option.
+the physical controller's clock is correct. Check its weekday and clock when
+interpreting these planned times.
 
 ## Temporary temperatures
 
-A room can use a temporary target from 5–40°C in half-degree steps, ending at an
-explicit time within 24 hours or at its next verified programme boundary. The
-preview names the room, target, deadline and Homebridge/internet requirement.
-Starting selects native Hold without rewriting any weekly events. Native Hold
-has no verified device countdown, so Homebridge must send Scheduled mode at the
-deadline. If the bridge or connection stops, the Hold temperature can continue.
+**New temporary temperatures are unavailable.** On 7 November 2026, a controlled
+test requested 20.5°C for one minute from Scheduled mode at 20°C. The combined
+target/Hold command instead reported Hold at 22°C. Returning to Scheduled mode
+retained 20.5°C rather than restoring 20°C. The test thermostat was explicitly
+restored to Scheduled mode at 20°C, confirmed by native readback.
 
-The transport reads the current power, unit, mode and target before changing
-anything; it only starts from powered-on Scheduled mode in Celsius. A target or
-mode changed outside the override prevents restoration from overwriting it.
-Commands are single-attempt and read back; an uncertain outcome is shown as
-recovery-required. A failed expiry does not retry automatically. After restart,
-an unfinished override always needs explicit review/resume. Presence changes
-during the override are remembered and applied after successful restoration.
+This means the tested command sequence does not provide a reliable boost and
+resume. Both API preview/start operations are blocked, and the editor omits the
+activation form. There is no opt-in bypass. Existing active/recovery records
+retain their explicit restoration controls. Correct Hold target semantics and
+scheduled-target restoration must be verified on hardware before this feature
+can be enabled. Native Hold also has no verified device countdown; any future
+host-timed expiry would require Homebridge and the Tuya connection to remain
+available.
 
 ## Local history and restore
 
@@ -114,10 +115,11 @@ verified wire format.
 
 ## Outages and conflicts
 
-Only the programme already uploaded to a thermostat is available to its built-in
-clock without a cloud connection. Switching to another profile through this
-plugin requires internet access. Clock retention after a thermostat power loss
-and daylight-saving changes remain separate hardware checks.
+The intended offline behaviour is for the thermostat's built-in clock to run
+the programme already uploaded to it; this has not been verified by a WAN outage
+test. Switching to another profile through this plugin requires internet access.
+Clock retention after a thermostat power loss and daylight-saving changes remain
+separate hardware checks.
 
 A weekly upload consists of individual event commands. Interrupted uploads can
 leave a mixture of old and new events. Each thermostat reports its own result;

@@ -21,6 +21,7 @@ export default class FastWarmOverrideTransport {
   constructor(private api: TuyaOpenAPI, private getDevice: (id: string) => TuyaDevice | undefined) {}
 
   async preview(id: string): Promise<FastWarmOverrideBaseline> {
+    this.requireVerifiedActivation();
     const reading = await this.read(id);
     if (!reading.power || reading.mode !== 'smart') {
       throw new Error('Temporary overrides require an online, powered-on thermostat in Scheduled mode.');
@@ -31,6 +32,8 @@ export default class FastWarmOverrideTransport {
   async startOverride(id: string, request: {
     temperature: number; endsAt: number; baseline: FastWarmOverrideBaseline;
   }): Promise<void> {
+    // Also reject previously issued previews: disabling the editor alone cannot prevent activation.
+    this.requireVerifiedActivation();
     this.validateTemperature(request.temperature);
     if (!Number.isSafeInteger(request.endsAt) || request.endsAt <= Date.now() || request.endsAt > Date.now() + 24 * 60 * 60_000) {
       throw new Error('Choose an override ending within the next 24 hours.');
@@ -71,6 +74,13 @@ export default class FastWarmOverrideTransport {
     if (!Number.isFinite(temperature) || temperature < 5 || temperature > 40 || !Number.isInteger(temperature * 2)) {
       throw new Error('Choose a temperature from 5–40°C in 0.5°C steps.');
     }
+  }
+
+  private requireVerifiedActivation() {
+    // The live combined target/Hold command restored a different stored Hold temperature.
+    // Keep activation unavailable until a separate, explicitly authorized protocol is verified on hardware.
+    throw new Error('Temporary temperature overrides are unavailable until FastWarm Hold and setpoint transitions are verified. '
+      + 'No command was sent.');
   }
 
   private requireDevice(id: string) {

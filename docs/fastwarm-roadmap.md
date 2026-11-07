@@ -6,11 +6,12 @@ still need implementation and device testing.
 
 The development branch contains the temperature fix, programme transport,
 Home/Away/Holiday profile state, private runtime/UI relay, Apple Home selector
-switches and a shared editor. It also includes host-timed overrides, planned
-now/next periods, Holiday return/preheat, Away grace/guest hold, temperature
-history and programme version restore. A read-only pilot on 7 November 2026
-verified six measured temperatures and one complete native programme. Live
-schedule/override commands and offline execution still need hardware validation.
+switches and a shared editor. It also includes planned now/next periods, Holiday
+return/preheat, Away grace/guest hold, temperature history and programme version
+restore. A pilot on 7 November 2026 verified six measured temperatures and one
+complete native programme. A subsequent temporary-temperature hardware test
+failed, so new boosts/setbacks are disabled. Native weekly programme uploads
+and offline execution still need hardware validation.
 See [the programme guide](fastwarm-profiles.md).
 
 The selected policy is household occupancy: anyone home selects Home, everyone
@@ -136,6 +137,16 @@ semantics before implementation. A Hold setting can prevent the normal programme
 from resuming. Avoid frequent whole-week uploads when a verified temporary
 override would satisfy the requested behaviour.
 
+The controlled 7 November 2026 test requested 20.5°C for one minute from Scheduled
+mode at 20°C. Sending `SetTemp: 205` together with `ControlMode: hold` reported
+Hold at 22°C; returning to `smart` retained 20.5°C. The thermostat was explicitly
+restored to Scheduled mode at 20°C and checked through native readback. The
+tested sequence is therefore not a validated override transport. Preview/start
+are blocked without an opt-in bypass and the editor has no activation form;
+existing restoration controls remain available. Re-enable only after hardware
+validation establishes both the correct Hold target and exact scheduled-target
+restoration. This test did not validate weekly uploads or offline execution.
+
 ## Review and validation sequence
 
 1. Temperature support: exact-product raw enrichment, live updates and honest
@@ -150,8 +161,9 @@ override would satisfy the requested behaviour.
 5. Hardware outage checks: WAN-only interruption, Homebridge restart, thermostat
    power cycle, clock retention, reconnection and daylight-saving behaviour.
 
-The codec tests and local software checks do not prove real-device writes,
-offline clock behaviour or successful installation on the user's Homebridge.
+The branch is installed on the user's Homebridge, and native reads and measured
+temperature reporting were checked there. Codec tests and local software checks
+do not prove weekly programme uploads or offline clock behaviour.
 
 ## References
 

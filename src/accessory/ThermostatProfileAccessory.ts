@@ -11,9 +11,23 @@ export default class ThermostatProfileAccessory {
       .setCharacteristic(Characteristic.Model, 'Thermostat programme selector')
       .setCharacteristic(Characteristic.SerialNumber, runtime.instanceId);
     const presence = accessory.getServiceById(Service.Switch, 'anyone-home')
-      || accessory.addService(Service.Switch, 'Heating Someone Home', 'anyone-home');
+      || accessory.addService(Service.Switch, 'Home', 'anyone-home');
     const holiday = accessory.getServiceById(Service.Switch, 'holiday')
-      || accessory.addService(Service.Switch, 'Heating Holiday', 'holiday');
+      || accessory.addService(Service.Switch, 'Holiday', 'holiday');
+
+    // Apple Home needs a configured name for each switch in this grouped accessory.
+    // Keep the existing services/identifiers and any name the user has chosen.
+    for (const [service, name] of [[presence, 'Home'], [holiday, 'Holiday']] as const) {
+      service.displayName = name;
+      service.setCharacteristic(Characteristic.Name, name);
+      if (!service.testCharacteristic(Characteristic.ConfiguredName)) {
+        service.addOptionalCharacteristic(Characteristic.ConfiguredName);
+      }
+      const configuredName = service.getCharacteristic(Characteristic.ConfiguredName).value;
+      if (typeof configuredName !== 'string' || !configuredName.trim()) {
+        service.setCharacteristic(Characteristic.ConfiguredName, name);
+      }
+    }
 
     presence.getCharacteristic(Characteristic.On)
       .onGet(() => {

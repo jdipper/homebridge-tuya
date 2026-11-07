@@ -17,8 +17,14 @@ profiles is a power on/off schedule.
 
 The Homebridge accessory **Heating Programmes** exposes two switches:
 
-- **Heating Someone Home**: on selects Home, off selects Away.
-- **Heating Holiday**: on selects Holiday regardless of household presence.
+- **Home**: on selects Home, off selects Away.
+- **Holiday**: on selects Holiday regardless of household presence. Turning it off
+  returns to the selected Home/Away state.
+
+Both switches belong to **Heating Programmes**. Their configured names are seeded
+individually; names chosen in Apple Home are preserved. Existing Home-app cached
+names may need refreshing or renaming there after an upgrade. The accessory and
+switch identifiers are unchanged, so existing automations keep their targets.
 
 Presence changes during Holiday are remembered. Turning Holiday off selects Home
 if anyone is home, or Away if everyone is out. Holiday can end manually or at an
@@ -39,8 +45,8 @@ An overdue timer after restart requires explicit recovery instead of replaying
 old commands. Unknown occupancy at Holiday return also requires review.
 
 Create Apple Home automations for the first person arriving and the last person
-leaving, setting **Heating Someone Home** on or off respectively. A scene or
-automation can turn **Heating Holiday** on when leaving overnight, and off when
+leaving, setting **Heating Programmes → Home** on or off respectively. A scene or
+automation can turn **Heating Programmes → Holiday** on when leaving overnight, and off when
 returning. Presence detection belongs to Apple Home; the plugin receives only the
 resulting switch state, not anyone's location.
 

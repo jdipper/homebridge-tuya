@@ -270,6 +270,9 @@ describe('presence and Holiday programme application', () => {
     await runtime.handle('/holiday', { active: true });
     await runtime.handle('/presence', { home: false });
     expect(room(runtime).sync.requestedProfile).toBe('holiday');
+    expect(room(runtime).sync.applyingProfile).toBe('home');
+    expect(room(runtime).sync.queuedProfile).toBe('holiday');
+    expect(room(runtime).sync.confirmationMatchesRequested).toBe(false);
     expect(runtime.view().presence.home).toBe(false);
     gate.resolve();
     await idle(runtime);
@@ -354,6 +357,7 @@ describe('presence and Holiday programme application', () => {
     expect(runtime.state.devices['room-a'].confirmedProgramme).toEqual(programme(20));
     expect(room(runtime).profiles.home).toEqual(programme(21));
     expect(room(runtime).sync.status).toBe('pending');
+    expect(room(runtime).sync.confirmationMatchesRequested).toBe(false);
   });
 
   test('ending Holiday with unknown occupancy is rejected before choosing a fallback profile', async () => {
@@ -401,6 +405,8 @@ describe('runtime persistence', () => {
     expect(room(runtime).profiles.home).toEqual(programme(20));
     expect(room(runtime).sync.confirmedProfile).toBeNull();
     expect(room(runtime).sync.status).toBe('idle');
+    expect(room(runtime).sync.confirmedAt).toBeNull();
+    expect(room(runtime).sync.confirmationMatchesRequested).toBe(false);
     expect(transport.read).not.toHaveBeenCalled();
     expect(transport.apply).not.toHaveBeenCalled();
     expect(transport.activateProgramme).not.toHaveBeenCalled();
@@ -507,6 +513,59 @@ describe('bridge-owned controls and timers', () => {
   });
 });
 
+describe('programme confirmation feedback', () => {
+  test('a complete native read alone does not claim that a saved profile was applied', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    expect(room(runtime).sync.status).toBe('verified');
+    expect(room(runtime).sync.confirmedAt).toBeNull();
+    expect(room(runtime).sync.confirmationMatchesRequested).toBe(false);
+    expect(transport.apply).not.toHaveBeenCalled();
+  });
+
+  test('an automatic upload exposes its confirmation time only after readback and Scheduled mode verification', async () => {
+    const { runtime } = await fixture();
+    await configure(runtime, true);
+    const requestedAt = Date.now();
+    await runtime.handle('/presence', { home: true });
+    await idle(runtime);
+    expect(room(runtime).sync).toMatchObject({
+      profileStatus: 'confirmed', requestedProfile: 'home', confirmedProfile: 'home',
+      applyingProfile: null, queuedProfile: null, confirmationMatchesRequested: true,
+    });
+    expect(room(runtime).sync.confirmedAt).toBeGreaterThanOrEqual(requestedAt);
+  });
+
+  test.each(['saved edit', 'incomplete read', 'failed settings read', 'Hold mode', 'grouped mode', 'offline'])(
+    '%s retains the historical confirmation but cannot count as current household success', async failure => {
+      const { runtime, transport, apiGet, mode, grouping } = await fixture();
+      await configure(runtime, true);
+      await runtime.handle('/presence', { home: true });
+      await idle(runtime);
+      const confirmedAt = room(runtime).sync.confirmedAt;
+      expect(room(runtime).sync.confirmationMatchesRequested).toBe(true);
+      if (failure === 'saved edit') {
+        await save(runtime, 'home', 21);
+      } else if (failure === 'offline') {
+        runtime.manager.getDevice('room-a')!.online = false;
+      } else {
+        if (failure === 'incomplete read') {
+          transport.read.mockImplementationOnce(async id => ({ ...transport.snapshot(id), fingerprint: null,
+            timedOut: true, errors: ['Some periods were not reported'] }));
+        }
+        if (failure === 'failed settings read') apiGet.mockRejectedValueOnce(new Error('Tuya unavailable'));
+        if (failure === 'Hold mode') mode.set('room-a', 'hold');
+        if (failure === 'grouped mode') grouping.set('room-a', 1);
+        await runtime.handle('/schedules/read', { deviceIds: ['room-a'] });
+        await idle(runtime);
+      }
+      expect(room(runtime).sync.confirmedProfile).toBe('home');
+      expect(room(runtime).sync.confirmedAt).toBe(confirmedAt);
+      expect(room(runtime).sync.confirmationMatchesRequested).toBe(false);
+    },
+  );
+});
+
 describe('temporary overrides', () => {
   function fakeClock() {
     jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
@@ -546,6 +605,7 @@ describe('temporary overrides', () => {
     const plan = await review(runtime);
     await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
     await idle(runtime);
+    expect(room(runtime).sync.confirmationMatchesRequested).toBe(false);
     await runtime.handle('/presence', { home: false });
     await idle(runtime);
     expect(transport.apply).toHaveBeenCalledTimes(1);

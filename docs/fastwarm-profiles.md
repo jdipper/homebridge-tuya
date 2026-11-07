@@ -110,6 +110,23 @@ does not change the household presence or Holiday selection. The editor shows
 requested and confirmed profiles separately, including saved changes that still
 need applying.
 
+The Household panel reports progress across rooms enabled for automatic changes:
+how many have confirmed the selected programme, which are updating or waiting,
+and which need attention. An Away delay shows its scheduled time while Home
+continues. Holiday, guest holds, preheat and recovery are shown separately from
+room confirmation. Rooms outside automatic control are excluded from the total.
+
+Room cards show their programme result and last successful confirmation time
+without opening Room details. Confirmation requires the saved requested programme
+to match the complete native readback, with Scheduled mode and seven-day
+programming confirmed. A successful read alone does not confirm that a profile
+was applied. Editing a saved programme, an incomplete read, an offline room or a
+temporary override prevents a current success claim; historical confirmation
+remains visible. These results describe the last verified application, rather
+than continuous monitoring of changes made at the physical controller. Apple
+Home's switches continue to show household selection; progress appears here in
+Homebridge.
+
 Each room has an IANA time zone. Planned times use the last complete programme
 and do not prove the physical controller's clock is correct. Check its weekday
 and clock when interpreting these planned times.

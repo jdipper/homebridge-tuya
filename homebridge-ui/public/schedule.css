@@ -32,6 +32,17 @@
 .schedule-tab.active { color: var(--schedule-accent); border-bottom-color: var(--schedule-accent); font-weight: 650; }
 .presence-panel { padding: 16px; background: var(--schedule-accent-soft); border-radius: 9px; margin-bottom: 24px; flex-wrap: wrap; }
 .presence-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.programme-feedback { width: 100%; border: 1px solid var(--schedule-border); border-left: 4px solid var(--schedule-muted); border-radius: 7px; padding: 11px 13px; }
+.programme-feedback > strong { display: block; font-size: .94rem; line-height: 1.5; }
+.programme-feedback > p { margin-top: 3px; }
+.room-programme-feedback { border-left: 3px solid var(--schedule-border); padding: 1px 0 1px 10px; margin-top: 12px; }
+.room-programme-feedback > strong { display: block; font-size: .82rem; font-weight: 650; line-height: 1.5; }
+.room-programme-feedback > p { color: var(--schedule-muted); font-size: .75rem; line-height: 1.5; margin-top: 2px; }
+.programme-feedback.confirmed, .room-programme-feedback.confirmed { border-left-color: var(--schedule-accent); }
+.programme-feedback.confirmed > strong, .room-programme-feedback.confirmed > strong { color: var(--schedule-accent); }
+.programme-feedback.applying, .room-programme-feedback.applying, .room-programme-feedback.checking { border-left-color: #5386ba; }
+.programme-feedback.attention, .programme-feedback.pending, .programme-feedback.offline,
+.room-programme-feedback.attention, .room-programme-feedback.pending, .room-programme-feedback.offline { border-left-color: #b98232; }
 .profile-toolbar { flex-wrap: wrap; margin-bottom: 14px; }
 .profile-tabs { margin: 0; }
 .bulk-actions { margin: 14px 0; flex-wrap: wrap; }

@@ -78,8 +78,144 @@ function cloneProgrammeForRooms(schedule, deviceIds) {
   return deviceIds.map(deviceId => ({ deviceId, schedule: JSON.parse(JSON.stringify(schedule)) }));
 }
 
+/** Household intent is independent of the programme tab being edited. */
+function householdProgrammeIntent(view) {
+  const presence = view.presence || {};
+  const holiday = view.holiday || {};
+  if (holiday.preheating) { return 'home'; }
+  if (holiday.active) { return 'holiday'; }
+  const home = presence.effectiveHome === undefined ? presence.home : presence.effectiveHome;
+  return home === true ? 'home' : home === false ? 'away' : null;
+}
+
+function householdProgrammeContext(view, formatDate = value => new Date(value).toLocaleString()) {
+  const presence = view.presence || {};
+  const holiday = view.holiday || {};
+  if (view.controls && view.controls.recoveryRequired || holiday.recoveryRequired) {
+    return 'Household timers are paused for review. Open Presence, guests & holiday return to resume them.';
+  }
+  if (holiday.preheating) { return 'Holiday preheat: Home programme requested before your return.'; }
+  if (holiday.active) { return 'Holiday programme requested. Holiday takes priority; presence is remembered for your return.'; }
+  if (presence.holdUntil) { return `Guest hold: Home programme requested until ${formatDate(presence.holdUntil)}.`; }
+  if (presence.pendingAwayAt) {
+    const current = householdProgrammeIntent(view);
+    return `Away scheduled for ${formatDate(presence.pendingAwayAt)}.${current === 'home' ? ' Home remains requested until then.'
+      : current === 'away' ? ' Away is already requested.' : ' No household programme is currently requested.'}`;
+  }
+  const profile = householdProgrammeIntent(view);
+  return profile === 'home' ? 'Someone is home. Home programme requested.'
+    : profile === 'away' ? 'Everyone is away. Away programme requested.' : 'Presence has not been set.';
+}
+
+/** A remembered profile name or a successful read alone does not confirm an upload. */
+function roomProgrammeFeedback(room, options = {}) {
+  const names = { home: 'Home', away: 'Away', holiday: 'Holiday' };
+  const sync = room.sync || {};
+  const requested = options.profile || sync.requestedProfile;
+  const name = names[requested] || 'Programme';
+  const confirmedName = names[sync.confirmedProfile];
+  const date = value => typeof options.formatDate === 'function' ? options.formatDate(value) : new Date(value).toLocaleString();
+  const confirmedAt = Number.isFinite(sync.confirmedAt) && sync.confirmedAt > 0 ? sync.confirmedAt : null;
+  const previous = confirmedName ? `Last confirmed: ${confirmedName}${confirmedAt ? ` · ${date(confirmedAt)}` : ''}.` : 'No programme confirmed yet.';
+  const result = (kind, title, detail) => ({ id: room.id, kind, title, detail, requestedProfile: requested || null, confirmedAt });
+  if (options.online === false) {
+    return result('offline', 'Confirmation unavailable', `The heating controller is unavailable. ${previous}`);
+  }
+  const override = room.override || {};
+  if (override.recoveryRequired || override.status === 'recovery-required') {
+    return result('attention', 'Programme restoration needs attention', override.error || 'Open Room details to retry restoring the programme.');
+  }
+  if (room.online !== true) {
+    return result('offline', `Offline · ${requested ? `${name} not confirmed` : room.enabled ? 'no programme requested' : 'automatic changes off'}`, previous);
+  }
+  if (sync.error || ['failed', 'partial', 'conflict'].includes(sync.status)
+    || ['failed', 'partial'].includes(sync.profileStatus)) {
+    return result('attention', `${name} needs attention`, `${sync.error || 'The programme update has not been confirmed.'} ${previous}`);
+  }
+  if (override.status && !['completed', 'cancelled', 'failed', 'idle'].includes(override.status)) {
+    return result('attention', `${name} not active`, `A temporary temperature is active or being restored. ${previous}`);
+  }
+  if (['applying', 'queued'].includes(sync.status) || sync.profileStatus === 'applying') {
+    const applyingProfile = sync.applyingProfile || sync.queuedProfile;
+    const applyingName = names[applyingProfile];
+    const title = applyingName ? `${sync.status === 'queued' && !sync.applyingProfile ? 'Queued' : 'Applying'} ${applyingName}` : 'Programme update in progress';
+    return result('applying', title, `${requested ? `${name} requested. ` : ''}Waiting for the complete programme and Scheduled mode to be confirmed. ${previous}`);
+  }
+  if (sync.status === 'reading') {
+    if (names[sync.queuedProfile]) {
+      return result('applying', `${names[sync.queuedProfile]} queued`, `A programme read is finishing before the queued update can start. ${previous}`);
+    }
+    return result('checking', `Checking ${name}`, `Reading the programme from the thermostat. ${previous}`);
+  }
+  if (!requested) {
+    return room.enabled ? result('pending', 'Waiting for household selection', `Choose Home, Away or Holiday to request a programme. ${previous}`)
+      : result('inactive', 'Automatic changes off', previous);
+  }
+  if (sync.requestedProfile !== requested) {
+    return result('pending', `${name} needs applying`, `${sync.requestedProfile ? `${names[sync.requestedProfile]} is currently requested. ` : ''}${previous}`);
+  }
+  if (sync.confirmationMatchesRequested === true && sync.profileStatus === 'confirmed'
+    && sync.confirmedProfile === requested && confirmedAt && room.mode === 'smart' && room.schedule && room.schedule.complete === true) {
+    return result('confirmed', `${name} confirmed`, `Programme read back and Scheduled mode confirmed${confirmedAt ? ` · ${date(confirmedAt)}` : ''}.`);
+  }
+  if (room.mode && room.mode !== 'smart') {
+    return result('attention', `${name} not active`, `The thermostat reports ${room.mode === 'hold' ? 'Hold' : room.mode === 'holiday' ? 'native Holiday' : room.mode} mode. ${previous}`);
+  }
+  return result('pending', `${name} needs applying`, `The saved ${name} programme is not currently confirmed on this thermostat. ${previous}`);
+}
+
+function buildProgrammeFeedback(view, options = {}) {
+  const names = { home: 'Home', away: 'Away', holiday: 'Holiday' };
+  const profile = householdProgrammeIntent(view);
+  const name = names[profile] || 'Programme';
+  const enabled = (view.thermostats || []).filter(room => room.enabled);
+  const rooms = enabled.map(room => ({ ...roomProgrammeFeedback(room, { ...options, profile }),
+    name: scheduleRoomLabel(room, view.thermostats) }));
+  const total = rooms.length;
+  const count = kind => rooms.filter(room => room.kind === kind).length;
+  const confirmed = count('confirmed');
+  const counts = { total, confirmed, applying: count('applying'), checking: count('checking'),
+    pending: count('pending'), offline: count('offline'), attention: count('attention') };
+  const result = (kind, title, detail) => ({ kind, title, detail, profile, counts, rooms });
+  if (options.online === false) {
+    return result('offline', 'Controller unavailable · confirmation paused', 'Reconnect to Homebridge to check the programme results. The last displayed state is not a fresh confirmation.');
+  }
+  if (!total) {
+    return result('neutral', 'No rooms enabled for automatic changes', 'Home and Holiday switches will not apply programmes to any room. Enable “Use saved profiles for automatic household changes” in a room’s programme editor.');
+  }
+  const recovery = view.controls && view.controls.recoveryRequired || view.holiday && view.holiday.recoveryRequired;
+  if (recovery) {
+    return result('attention', `Household timers need review · ${confirmed} of ${total} rooms confirmed`, 'Open Presence, guests & holiday return to review and resume the timers.');
+  }
+  if (!profile) {
+    return result('neutral', 'Choose Home, Away or Holiday to request a programme', 'Household presence has not been set. No automatic household programme is currently selected.');
+  }
+  const progress = `${confirmed} of ${total} rooms confirmed`;
+  const attention = rooms.filter(room => ['attention', 'offline'].includes(room.kind));
+  if (attention.length) {
+    const labels = attention.map(room => `${room.name}${room.kind === 'offline' ? ' (offline)' : ''}`).join(', ');
+    return result('attention', `${name} · ${progress} · ${attention.length} need${attention.length === 1 ? 's' : ''} attention`,
+      `${labels}.${counts.applying ? ` Updates are still running in ${counts.applying} room${counts.applying === 1 ? '' : 's'}.` : ''} See each room’s result below.`);
+  }
+  if (counts.applying) {
+    const olderUpdate = enabled.some(room => room.sync && (room.sync.applyingProfile || room.sync.queuedProfile)
+      && (room.sync.applyingProfile || room.sync.queuedProfile) !== profile);
+    return result('applying', `${olderUpdate ? `Updating programmes · ${name} requested` : `Applying ${name}`} · ${progress}`,
+      'Each room is confirmed after its complete programme is read back and Scheduled mode is checked.');
+  }
+  if (counts.checking) {
+    return result('applying', `Checking ${name} · ${progress}`, 'Waiting for programme reads to finish. A successful read alone does not confirm a programme change.');
+  }
+  if (confirmed === total) {
+    return result('confirmed', total === 1 ? `${name} confirmed in 1 room` : `${name} confirmed on all ${total} rooms`,
+      'Each saved programme matched its read-back and Scheduled mode at its last confirmation. See the room timestamps below.');
+  }
+  return result('pending', `${name} · ${progress} · needs applying`, 'Some enabled rooms have not confirmed the requested saved programme. Review their results below; saved drafts alone do not change the heating.');
+}
+
 if (typeof module === 'object' && module.exports) {
-  module.exports = { buildTemperatureHistorySeries, scheduleRoomLabel, copyCompleteNativeProgramme, cloneProgrammeForRooms };
+  module.exports = { buildTemperatureHistorySeries, scheduleRoomLabel, copyCompleteNativeProgramme, cloneProgrammeForRooms,
+    householdProgrammeIntent, householdProgrammeContext, roomProgrammeFeedback, buildProgrammeFeedback };
 }
 
 (() => {
@@ -404,6 +540,9 @@ if (typeof module === 'object' && module.exports) {
     const editing = document.activeElement && document.activeElement.matches('#tuya-schedules input, #tuya-schedules select');
     if (!editing) {
       render();
+    } else {
+      // Status changes must remain visible without replacing an input mid-edit.
+      renderProgrammeFeedback();
     }
     schedulePoll();
   }
@@ -430,6 +569,7 @@ if (typeof module === 'object' && module.exports) {
     } catch (error) {
       state.online = false;
       showMessage(`${error.message || 'The heating controller is unavailable.'} Your open drafts are kept on this page.`, 'error');
+      renderProgrammeFeedback();
       updateSelection();
       schedulePoll();
     } finally {
@@ -452,10 +592,6 @@ if (typeof module === 'object' && module.exports) {
       state.pending = false;
       render();
     }
-  }
-
-  function statusBadge(status, label) {
-    return element('span', `status-badge ${status}`, label || STATUSES[status] || status);
   }
 
   function appendStat(container, label, value, className = '') {
@@ -1102,6 +1238,35 @@ if (typeof module === 'object' && module.exports) {
     container.append(copying, save, element('p', 'last-confirmed', 'Save creates drafts only. Use Review & apply selected to send them to the thermostats.'));
   }
 
+  function fillProgrammeFeedback(node, feedback) {
+    node.className = `${node.dataset.roomFeedback ? 'room-programme-feedback' : 'programme-feedback'} ${feedback.kind}`;
+    const title = node.querySelector('strong');
+    const detail = node.querySelector('p');
+    if (title.textContent !== feedback.title) { title.textContent = feedback.title; }
+    if (detail.textContent !== feedback.detail) { detail.textContent = feedback.detail; }
+  }
+
+  function renderProgrammeFeedback() {
+    const options = { online: state.online, formatDate };
+    fillProgrammeFeedback(byId('programme-feedback'), buildProgrammeFeedback(state.view, options));
+    const context = state.online ? householdProgrammeContext(state.view, formatDate)
+      : 'Household state cannot be refreshed while the controller is unavailable.';
+    if (byId('household-state').textContent !== context) { byId('household-state').textContent = context; }
+    document.querySelectorAll('[data-room-feedback]').forEach(node => {
+      const room = thermostat(node.dataset.roomFeedback);
+      if (room) { fillProgrammeFeedback(node, roomProgrammeFeedback(room, options)); }
+    });
+    const home = state.view.presence && state.view.presence.home;
+    const holiday = !!(state.view.holiday && state.view.holiday.active);
+    byId('home-control').classList.toggle('selected', home === true);
+    byId('away-control').classList.toggle('selected', home === false);
+    byId('holiday-control').classList.toggle('selected', holiday);
+    byId('holiday-control').textContent = holiday ? 'End holiday' : 'Enable holiday';
+    for (const id of ['home-control', 'away-control', 'holiday-control']) {
+      byId(id).disabled = !state.online || state.pending;
+    }
+  }
+
   function renderRoom(room) {
     const card = element('section', 'thermostat-card');
     const header = element('div', 'thermostat-card-header');
@@ -1136,12 +1301,12 @@ if (typeof module === 'object' && module.exports) {
     const draftState = draft.dirty ? 'Unsaved changes' : hasDraft ? 'Saved draft' : 'No draft yet';
     appendStat(stats, `${PROFILES[state.profile]} programme`, draftState);
     header.append(title, stats);
+    const programmeFeedback = element('div', 'room-programme-feedback');
+    programmeFeedback.dataset.roomFeedback = room.id;
+    programmeFeedback.append(element('strong'), element('p'));
+    header.append(programmeFeedback);
     if (room.override && room.override.status && !['completed', 'cancelled', 'failed', 'idle'].includes(room.override.status)) {
       header.append(element('p', 'override-state', `Temporary temperature: ${formatTemperature(room.override.temperature)} until ${formatDate(room.override.endsAt)} · ${STATUSES[room.override.status] || room.override.status}`));
-    }
-    if (BUSY.has(sync.status)) { header.append(statusBadge(sync.status)); }
-    if (sync.error || ['failed', 'partial', 'conflict'].includes(sync.status)) {
-      header.append(element('p', 'room-warning', sync.error || STATUSES[sync.status]));
     }
     if (room.override && (room.override.recoveryRequired || room.override.status === 'recovery-required')) {
       header.append(element('p', 'room-warning', room.override.error || 'Programme restoration needs attention. Open Room details to retry.'));
@@ -1253,25 +1418,7 @@ if (typeof module === 'object' && module.exports) {
         input.focus({ preventScroll: true });
       }
     }
-    const presence = state.view.presence || {};
-    const home = presence.home;
-    const effectiveHome = presence.effectiveHome ?? home;
-    const holiday = !!(state.view.holiday && state.view.holiday.active);
-    byId('household-state').textContent = state.view.controls && state.view.controls.recoveryRequired
-      ? 'Household timers need review. Open Presence, guests & holiday return to resume them.'
-      : state.view.holiday && state.view.holiday.preheating ? 'Holiday preheat: Home programme selected before your return.'
-      : holiday ? 'Holiday programme selected. Presence is remembered for your return.'
-      : presence.holdUntil ? `Guest hold: Home programme until ${formatDate(presence.holdUntil)}.`
-        : presence.pendingAwayAt ? `Everyone is away. Home programme continues until ${formatDate(presence.pendingAwayAt)}.`
-          : effectiveHome === true ? 'Someone is home. Home programme selected.'
-            : effectiveHome === false ? 'Everyone is away. Away programme selected.' : 'Presence has not been set.';
-    byId('home-control').classList.toggle('selected', home === true);
-    byId('away-control').classList.toggle('selected', home === false);
-    byId('holiday-control').classList.toggle('selected', holiday);
-    byId('holiday-control').textContent = holiday ? 'End holiday' : 'Enable holiday';
-    for (const id of ['home-control', 'away-control', 'holiday-control']) {
-      byId(id).disabled = !state.online || state.pending;
-    }
+    renderProgrammeFeedback();
     updateSelection();
     if (typeof homebridge.fixScrollHeight === 'function') {
       homebridge.fixScrollHeight();

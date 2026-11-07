@@ -187,6 +187,22 @@ export default class ThermostatRuntime extends EventEmitter {
       thermostats: this.devices().map(device => {
         const profiles = this.state.devices[device.id];
         const snapshot = this.snapshots.get(device.id);
+        const job = this.jobs.get(device.id);
+        const native = this.nativeSettings.get(device.id);
+        const syncStatus = job?.status === 'verified' && profiles
+          && ['pending', 'failed', 'partial'].includes(profiles.status)
+          ? profiles.status : job?.status ?? profiles?.status ?? 'idle';
+        const requestedProgramme = profiles?.requestedProfile ? profiles.programmes[profiles.requestedProfile] : undefined;
+        // A successful read or unrelated operation is not confirmation of a profile upload.
+        // Keep the last confirmation time separate from whether it still matches current intent.
+        const confirmationMatchesRequested = Boolean(device.online && profiles?.status === 'confirmed'
+          && profiles.requestedProfile !== null && profiles.requestedProfile === profiles.confirmedProfile
+          && profiles.confirmedAt !== null && !profiles.inFlight && requestedProgramme && profiles.confirmedProgramme
+          && JSON.stringify(requestedProgramme) === JSON.stringify(profiles.confirmedProgramme)
+          && snapshot?.fingerprint && JSON.stringify(stateFor(profiles.confirmedProgramme).days) === JSON.stringify(snapshot.state.days)
+          && native?.mode === 'smart' && native.grouping !== undefined && (native.grouping & 1) === 0
+          && !this.hasOverride(device.id) && !this.controls.recoveryRequired && !profiles.error && !job?.error
+          && (!job || job.status === 'verified'));
         const current = device.status.find(status => status.code === 'temp_current')?.value;
         const target = device.status.find(status => status.code === 'temp_set')?.value;
         const settings = this.roomSettings[device.id] ?? this.defaultRoomSettings();
@@ -213,12 +229,15 @@ export default class ThermostatRuntime extends EventEmitter {
           profiles: profiles?.programmes ?? {},
           enabled: this.state.enabledDeviceIds.includes(device.id),
           sync: {
-            status: this.jobs.get(device.id)?.status === 'verified' && profiles
-              && ['pending', 'failed', 'partial'].includes(profiles.status)
-              ? profiles.status : this.jobs.get(device.id)?.status ?? profiles?.status ?? 'idle',
+            status: syncStatus,
+            profileStatus: profiles?.status ?? 'idle',
             requestedProfile: profiles?.requestedProfile,
             confirmedProfile: profiles?.confirmedProfile,
-            error: this.jobs.get(device.id)?.error ?? profiles?.error,
+            confirmedAt: profiles?.confirmedAt ?? null,
+            applyingProfile: profiles?.inFlight?.profileId ?? null,
+            queuedProfile: this.pending.get(device.id) ?? null,
+            confirmationMatchesRequested,
+            error: job?.error ?? profiles?.error,
           },
         };
       }),

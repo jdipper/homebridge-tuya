@@ -40,6 +40,8 @@ The device's cloud model declares these properties:
 
 | DP | Code | Access | Purpose |
 | --- | --- | --- | --- |
+| 101 | `power1` | read/write | Native power state; used only for override preflight/readback, never changed by overrides |
+| 102 | `SetTemp` | read/write | Target temperature, scale 1 |
 | 103 | `ControlMode` | read/write | `smart`, `holiday`, `hold` |
 | 105 | `RoomTemper` | read | Room temperature, scale 1 |
 | 110 | `Event_Adaptive_Set` | read/write | Programme grouping and adaptive start bits |

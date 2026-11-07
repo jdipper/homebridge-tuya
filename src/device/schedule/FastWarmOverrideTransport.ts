@@ -84,7 +84,7 @@ export default class FastWarmOverrideTransport {
   private async read(id: string): Promise<OverrideReading> {
     this.requireDevice(id);
     const response = await this.api.request('get', `/v2.0/cloud/thing/${id}/shadow/properties`, {
-      codes: 'ControlMode,SetTemp,power,TemperUnitChange',
+      codes: 'ControlMode,SetTemp,power1,TemperUnitChange',
     }, null, { attempts: 1, timeoutMs: 10_000 });
     if (response.success !== true || !Array.isArray(response.result?.properties)) {
       throw new Error('Could not read the thermostat before changing its override.');
@@ -93,7 +93,8 @@ export default class FastWarmOverrideTransport {
     const get = (code: string) => properties.find(item => item.code === code)?.value;
     const mode = get('ControlMode');
     const target = get('SetTemp');
-    const power = get('power');
+    // This product's native DP101 is power1, distinct from standardized switch/power codes.
+    const power = get('power1');
     // DP107 false=C has been verified for this product; do not trust a stale standard-unit cache alone.
     if (get('TemperUnitChange') !== false || typeof mode !== 'string' || !['smart', 'holiday', 'hold'].includes(mode)
       || typeof target !== 'number' || !Number.isInteger(target) || (power !== true && power !== false && power !== 0 && power !== 1)) {

@@ -5,10 +5,10 @@ import { initLogger } from '../../src/util/Logger';
 
 const NOW = Date.parse('2026-11-07T10:00:00Z');
 const baseline: FastWarmOverrideBaseline = { mode: 'smart', temperature: 20, power: true, unit: 'c' };
-const shadow = (mode = 'smart', temperature = 20, power: number | boolean = 1, unit = false) => ({
+const shadow = (mode = 'smart', temperature = 20, power: number | boolean = true, unit = false) => ({
   success: true as const, t: NOW, tid: 'test', result: { properties: [
     { code: 'ControlMode', value: mode }, { code: 'SetTemp', value: temperature * 10 },
-    { code: 'power', value: power }, { code: 'TemperUnitChange', value: unit },
+    { code: 'power1', dp_id: 101, type: 'bool', value: power }, { code: 'TemperUnitChange', value: unit },
   ] },
 });
 
@@ -34,7 +34,16 @@ describe('explicit FastWarm host-timed overrides', () => {
   test('preview reads native controls with a deadline, without any command', async () => {
     expect(await transport.preview('room')).toEqual(baseline);
     expect(read).toHaveBeenCalledWith('get', '/v2.0/cloud/thing/room/shadow/properties',
-      { codes: 'ControlMode,SetTemp,power,TemperUnitChange' }, null, { attempts: 1, timeoutMs: 10000 });
+      { codes: 'ControlMode,SetTemp,power1,TemperUnitChange' }, null, { attempts: 1, timeoutMs: 10000 });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  test('requires the verified native power1 property rather than an unverified power alias', async () => {
+    const response = shadow();
+    const property = response.result.properties.find(item => item.code === 'power1')!;
+    property.code = 'power';
+    read.mockResolvedValue(response);
+    await expect(transport.preview('room')).rejects.toThrow(/verified Celsius, power, mode and target/);
     expect(write).not.toHaveBeenCalled();
   });
 
@@ -66,7 +75,8 @@ describe('explicit FastWarm host-timed overrides', () => {
 
   test('a concurrent manual target change invalidates the preview', async () => {
     read.mockResolvedValue(shadow('smart', 18));
-    await expect(transport.startOverride('room', { temperature: 22, endsAt: NOW + 3600000, baseline })).rejects.toThrow(/changed after preview/);
+    await expect(transport.startOverride('room', { temperature: 22, endsAt: NOW + 3600000, baseline }))
+      .rejects.toThrow(/changed after preview/);
     expect(write).not.toHaveBeenCalled();
   });
 

@@ -12,7 +12,8 @@ thermostat over the LAN; it does not protect against Homebridge or LAN failure.
 **New boosts remain disabled.** Both transport preview and start reject activation
 before any cloud read or write, with no configuration bypass. Explicit recovery
 remains available. This investigation added no heating commands, timer tasks,
-programme changes, permission changes or network interruptions. The earlier
+programme changes or network interruptions. Following explicit user approval,
+Device Timer was subscribed and authorized for project Test2. The earlier
 controlled test below is historical evidence, not a successful boost validation.
 
 ## Observed behaviour
@@ -75,16 +76,22 @@ it does not prove compatibility or countdown behaviour on these six devices.
 - A project-authenticated thing read succeeded. A local key is available for a
   future local status check, but no key, access token or full device identifier is
   included in this document or exposed to the editor.
-- A read-only project request to
+- The initial read-only project request to
   `GET /v2.0/cloud/timer/device/{device_id}` for `…cdrjgm` returned code `28841101`:
   “No permissions. This API is not subscribed.” This establishes a project API
   permission limitation, not whether the thermostat supports local schedules.
-- The project lists five authorized services and does not include Device Timer.
-  Tuya's Device Timer service page offers Basic Edition at $0 with a Long-Lived
-  validity period, while the developer console labels activation Free Trial.
-  Subscription and project authorization have not been changed; approval was
-  requested before adding its timer read/write permissions.
+- The project initially listed five authorized services without Device Timer.
+  Tuya's service page offered Basic Edition at $0 with a Long-Lived validity
+  period. After user approval, the console's Free Trial flow subscribed Device
+  Timer and authorized Test2. Its resource table now shows Permanent validity and
+  In service, and its Authorized Projects table lists Test2. The displayed
+  effective date is 7 November 2026 at 12:41:33.
   [Service listing](https://www.tuya.com/vas/commodity/DEVICE_TIMER).
+- After authorization, the public timer-list query succeeded for all six online
+  thermostats. Each returned an empty list. This resolves API access but supplies
+  no existing task whose execution mode or device-download state can be examined.
+  No task was created or modified. Neither the current public query nor the
+  documented legacy query exposes a conclusive module-local capability flag.
 - The existing plugin uses cloud API/MQTT transport. It has no implemented LAN
   transport or confirmed module-local timer integration.
 
@@ -103,9 +110,12 @@ Tuya documents a separate module schedule facility: downloaded DP tasks can run
 offline, but product enablement and device support must be established. That
 framework documentation is not a capability declaration for the ET-63.
 [Tuya Local Schedule](https://developer.tuya.com/en/docs/iot-device-dev/TuyaOS-iot_abi_device_local_timer?id=Kd5s8n8503nyh).
-It also documents an execution delay of approximately 15 seconds, which must be
-included in the promised timing tolerance rather than treating expiry as exact
-to the second.
+The English FAQ describes a 15-second delay to reduce flash writes. Its
+[Chinese version](https://developer.tuya.com/cn/docs/iot-device-dev/TuyaOS-iot_abi_device_local_timer?id=Kd5s8n8503nyh)
+clarifies that this delay follows each schedule setting; it does not establish
+that every task runs 15 seconds after its due time. Allow schedule download and
+flash persistence to settle before testing offline execution, and measure actual
+expiry timing separately.
 
 The panel timer API documents one-time tasks and exposes `runMode`: 0 denotes
 cloud execution, 1 local execution. A successful creation response or timer ID
@@ -164,6 +174,16 @@ Native schedule re-evaluation, if available, would be preferable but must be
 demonstrated. Confirm both mode and target; Smart mode alone is insufficient.
 
 ## Staged validation plan
+
+The next unresolved capability cannot be established from the empty timer lists.
+A controlled, separately authorized test could use child lock ON then OFF on one
+identified thermostat, leaving its temperature and heating mode unchanged. An
+online test establishes only that scheduled commands work. Offline proof must
+deny internet access to the **thermostat itself** after tasks have downloaded and
+settled, and observe execution at the panel or over a verified LAN connection.
+Blocking only Homebridge's cloud access would leave the thermostat reachable by
+Tuya and would not prove device-local execution. Room identification, network
+placement, observation and explicit recovery must be established before that test.
 
 ### 1. Finish read-only capability checks
 

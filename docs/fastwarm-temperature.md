@@ -16,6 +16,13 @@ a recovery read, with throttling, concurrent-request coalescing and backoff on
 failures. Normal sensor changes use MQTT. The profile creates no polling timer.
 Existing standard setpoint, power and display-unit command codes are retained.
 
+For this exact product in Celsius, native `SetTemp` (DP102, scale 1) also feeds
+the existing `temp_set` reading. This keeps the displayed target current when
+native commands or mode transitions report a different target through raw MQTT.
+Target reports are ordered independently of measured-temperature reports and do
+not refresh the room sensor's timestamp. This translation only reads reports;
+it does not change the existing standard setpoint command path.
+
 If a measured value cannot be obtained, HomeKit reports it unavailable rather
 than displaying the target as a measurement. The verified raw representation is
 Celsius; Fahrenheit and unknown units report the current measurement unavailable

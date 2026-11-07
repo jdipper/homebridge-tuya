@@ -45,7 +45,7 @@ describe('FastWarm raw temperature support', () => {
     const post = jest.spyOn(api, 'post').mockResolvedValue({ success: true, result: true, t: NOW, tid: 'test' });
     await manager.enrichDeviceStatus(device);
 
-    expect(get).toHaveBeenCalledWith('/v2.0/cloud/thing/thermostat-1/shadow/properties', { codes: 'RoomTemper' });
+    expect(get).toHaveBeenCalledWith('/v2.0/cloud/thing/thermostat-1/shadow/properties', { codes: 'RoomTemper,SetTemp' });
     expect(device.schema.find(schema => schema.code === 'temp_current')).toMatchObject({
       mode: 'ro', type: 'Integer', property: { scale: 1 },
     });

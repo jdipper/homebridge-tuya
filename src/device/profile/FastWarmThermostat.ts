@@ -33,11 +33,32 @@ export function getFastWarmTemperatureReport(value: unknown): FastWarmTemperatur
   if (!isFastWarmTemperatureReport(value)) {
     return undefined;
   }
+  return parseTemperatureReport(value, '105', 0, 1130);
+}
 
-  const report = value;
-  const hasNumericKey = Object.prototype.hasOwnProperty.call(report, '105');
-  const temperature = hasNumericKey ? report['105'] : report.value;
-  if (typeof temperature !== 'number' || !Number.isInteger(temperature) || temperature < 0 || temperature > 1130) {
+export function isFastWarmSetTemperatureReport(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const report = value as Record<string, unknown>;
+  const dpID = report.dp_id ?? report.dpId;
+  return report.code === 'SetTemp' || dpID === 102 || dpID === '102'
+    || Object.prototype.hasOwnProperty.call(report, '102');
+}
+
+/** Native DP102 and standardized temp_set use Celsius tenths for this product. */
+export function getFastWarmSetTemperatureReport(value: unknown): FastWarmTemperatureReport | undefined {
+  if (!isFastWarmSetTemperatureReport(value)) {
+    return undefined;
+  }
+  return parseTemperatureReport(value, '102', 50, 400);
+}
+
+function parseTemperatureReport(
+  report: Record<string, unknown>, numericKey: string, min: number, max: number,
+): FastWarmTemperatureReport | undefined {
+  const temperature = Object.prototype.hasOwnProperty.call(report, numericKey) ? report[numericKey] : report.value;
+  if (typeof temperature !== 'number' || !Number.isInteger(temperature) || temperature < min || temperature > max) {
     return undefined;
   }
 

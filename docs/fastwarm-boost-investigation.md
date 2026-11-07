@@ -561,8 +561,10 @@ The next Saturday event is 17:00 at 20°C, which could test Hold persistence but
 cannot demonstrate selection of a changed programme temperature. The next useful
 temperature change is **22:00, 20°C → 12°C**. A short proposed test would enter
 Hold at 20.5°C around 21:59 and use a Smart-only timer at 22:01, requiring fresh
-Scheduled/12°C confirmation after expiry. This has **not** been scheduled: there
-is no pending future timer or unattended heating job from this investigation.
+Scheduled/12°C confirmation after expiry. At that stage it had not been scheduled;
+there was no pending future timer or unattended heating job at the end of the initial
+investigation. The user subsequently requested scheduling this test; the dated
+host job is described below.
 
 Near the test, re-read the unchanged complete programme, verify thermostat clock
 alignment and the Smart/20°C baseline, then create and verify the one-off return
@@ -576,3 +578,58 @@ timer scenarios, covering stale reports, uncertain writes, interrupted execution
 failed timer execution, disk errors, recovery and ownership-limited cleanup.
 They do not substitute for the remaining physical boundary test. Runtime boost
 activation remains gated; the installed plugin was not redeployed.
+
+### Dated unattended boundary test
+
+The user explicitly requested scheduling the 21:59–22:01 test for 7 November
+2026. A fresh complete native programme read at **15:43:27.968 UTC** confirmed
+the same Saturday boundary. The reviewed plan fixes these UTC instants, which
+are also local Europe/London times on that date:
+
+| Time | Operation |
+| --- | --- |
+| 21:58 | Start the host worker; verify the device, empty timer list, and a fresh complete programme matching the reviewed fingerprint. |
+| 21:59 | Enter Hold, confirm it, then set and confirm 20.5°C. |
+| 22:00 | Observe Hold through the planned native change from 20°C to 12°C. |
+| 22:01 | Native Smart-only timer; require fresh Scheduled and 12°C reports before claiming the expected return. |
+| 22:02 | Separate native 12°C backup, removed beforehand when recovery and cleanup are verified. It cannot mask the earlier observation window. |
+
+`tools/fastwarm-boundary-job.cjs` manages a private Homebridge-user cron entry.
+The host has an active cron service, Europe/London timezone and synchronised NTP.
+The wrapper is single-date, refuses late or repeated execution, pins the plan
+and source hashes, removes its own cron entry before launching, and preserves
+unrelated entries. It stores private stdout/stderr and an execution receipt.
+It does not depend on this chat or browser remaining open.
+
+The deployed GET-only preflight passed. The host job was **armed and its exact
+cron entry verified at 15:57:24.265 UTC on 7 November**. Its marker is
+`fastwarm-boundary-20261107-cdrjgm`; the frozen probe SHA256 is
+`703ed5442624f775e77b808c9438a287f50e3109e9be1972cfec07b29064d85b`.
+No heating command or native timer was created while arming the host job.
+The scheduler and boundary diagnostics passed 16 and 18 VM scenarios respectively.
+
+`tools/fastwarm-heating-boundary-probe.cjs` creates and verifies both native
+timers immediately before the test, allowing settings to settle before Hold.
+All heating actions use Tuya's API. The existing Homebridge runtime's private
+socket is used only to request and collect native programme reports; it does not
+introduce thermostat LAN control or another SmartLife login.
+
+The programme is checked again during Hold. Changed manual settings are
+preserved. A programme-only edit removes the now-invalid fixed 12°C backup and
+exits our Hold using Smart only; if Smart cannot be confirmed, its safety timer
+is retained. That path is explicitly inconclusive and does not claim target
+restoration. Normal recovery after 22:00 uses 12°C, never the afternoon's 20°C.
+An unexpectedly high stored Hold recall is treated as our failed activation,
+with recovery, rather than being mistaken for an unrelated manual change.
+
+Private host files live under
+`/var/lib/homebridge/fastwarm-investigation/boundary-20261107/`: `plan.json`,
+`reviewed-programme.json`, installed `job.cjs` and `probe.cjs`, arming/launch
+receipts, `preflight.json`, and the eventual `execution.json`. The job wrapper's
+`--status` is read-only; `--cancel` removes its exact cron entry and writes the
+cancellation marker observed by a running worker.
+
+The physical thermostat clock is still not independently confirmed. An unexpected
+return target therefore cannot, alone, prove defective programme re-evaluation.
+The saved result retains this limitation. Offline execution is not tested by this
+scheduled investigation, and user-facing boost activation remains gated.

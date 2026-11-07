@@ -74,8 +74,8 @@
 .copy-actions .schedule-button { padding: 6px 9px; font-size: .78rem; }
 .native-programme { border-top: 1px solid var(--schedule-border); padding-top: 12px; margin-top: 12px; }
 .native-programme summary { cursor: pointer; font-size: .85rem; font-weight: 600; }
-.native-programme .schedule-grid { min-width: 440px; }
-.native-programme .schedule-grid td { font-size: .8rem; white-space: nowrap; }
+.native-programme .schedule-grid { min-width: 400px; }
+.native-programme .schedule-grid td { font-size: .8rem; white-space: normal; line-height: 1.6; }
 .last-confirmed { margin-top: 7px !important; }
 .draft-status { font-size: .78rem; margin-left: 4px; color: var(--schedule-muted); }
 .draft-status.unsaved { color: #916015; }

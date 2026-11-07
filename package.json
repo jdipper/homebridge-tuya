@@ -41,6 +41,7 @@
   ],
   "dependencies": {
     "@homebridge/camera-utils": "^2.2.0",
+    "@homebridge/plugin-ui-utils": "^2.2.7",
     "async-await-retry": "^2.0.1",
     "color-convert": "^2.0.1",
     "crypto-js": "^4.1.1",

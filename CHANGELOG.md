@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Experimental FastWarm weekly programme editor with separate Home, Away and Holiday temperature profiles, household presence controls in Apple Home, explicit preview/apply and fresh device readback. See [programme controls and validation limits](docs/fastwarm-profiles.md).
+
 ### Fixed
 - Read actual room temperature for FastWarm ET-63 thermostats with product ID `lmtejj3f4kafi2k1` when Tuya's standard schema omits it. See [FastWarm temperature support](docs/fastwarm-temperature.md).
 - Prevent out-of-order raw MQTT reports without property codes from overwriting values belonging to different datapoints.

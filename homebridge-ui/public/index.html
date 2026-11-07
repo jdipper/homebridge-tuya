@@ -1,0 +1,70 @@
+<link rel="stylesheet" href="schedule.css">
+
+<div id="tuya-schedules" class="tuya-schedules">
+  <header class="schedule-header">
+    <div>
+      <div class="schedule-eyebrow">TUYA HEATING</div>
+      <h2>Rooms &amp; schedules</h2>
+      <p>Keep the weekly programme on each thermostat. Use Home and Away profiles when your household comes and goes.</p>
+    </div>
+    <button id="refresh" class="schedule-button" type="button">Refresh</button>
+  </header>
+
+  <div class="schedule-tabs" role="tablist" aria-label="Plugin views">
+    <button id="schedules-tab" class="schedule-tab active" type="button" role="tab" aria-selected="true" aria-controls="schedules-view">Thermostats</button>
+    <button id="settings-tab" class="schedule-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-view">Settings</button>
+  </div>
+
+  <section id="settings-view" role="tabpanel" aria-labelledby="settings-tab" hidden>
+    <p class="schedule-notice">Connection and accessory settings appear below. Use Homebridge's Save button for these settings. Schedule drafts have their own save controls.</p>
+  </section>
+
+  <main id="schedules-view" role="tabpanel" aria-labelledby="schedules-tab">
+    <div id="message" class="schedule-message" role="status" aria-live="polite" hidden></div>
+    <section class="presence-panel" aria-label="Household heating profile">
+      <div>
+        <h3>Household</h3>
+        <p id="household-state">Loading the heating controller…</p>
+      </div>
+      <div class="presence-actions">
+        <button id="home-control" class="schedule-button" type="button">Someone home</button>
+        <button id="away-control" class="schedule-button" type="button">Everyone away</button>
+        <button id="holiday-control" class="schedule-button" type="button">Enable holiday</button>
+      </div>
+    </section>
+
+    <div class="profile-toolbar">
+      <div>
+        <h3>Weekly profiles</h3>
+        <p>Editing a draft does not change the heating. Review and apply when ready.</p>
+      </div>
+      <div class="schedule-tabs profile-tabs" role="tablist" aria-label="Schedule profile">
+        <button class="schedule-tab active" data-profile="home" type="button" role="tab" aria-selected="true">Home</button>
+        <button class="schedule-tab" data-profile="away" type="button" role="tab" aria-selected="false">Away</button>
+        <button class="schedule-tab" data-profile="holiday" type="button" role="tab" aria-selected="false">Holiday</button>
+      </div>
+    </div>
+
+    <div class="bulk-actions">
+      <label class="select-all"><input id="select-all" type="checkbox"> Select all thermostats</label>
+      <button id="apply-selected" class="schedule-button primary" type="button" disabled>Review &amp; apply selected</button>
+    </div>
+    <div id="thermostats" class="thermostat-list" aria-live="polite"></div>
+    <p class="schedule-footnote">Programme uploads and new profile changes need a working Tuya connection. Last-read programmes and saved drafts remain available here on your local network. Incomplete and unverified programmes are shown explicitly.</p>
+  </main>
+
+  <section id="apply-preview" class="apply-preview" role="dialog" aria-modal="true" aria-labelledby="preview-title" hidden>
+    <div class="apply-preview-card">
+      <h3 id="preview-title">Review programme changes</h3>
+      <p id="preview-description"></p>
+      <div id="preview-content"></div>
+      <p class="schedule-notice">Applying changes writes a programme to each selected thermostat. Updates are sent one event at a time; a connection failure can leave a partially updated programme. The result is checked by reading it back.</p>
+      <div class="preview-actions">
+        <button id="cancel-apply" class="schedule-button" type="button">Cancel</button>
+        <button id="confirm-apply" class="schedule-button primary" type="button">Apply programme changes</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="schedule.js"></script>

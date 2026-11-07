@@ -1,0 +1,112 @@
+.tuya-schedules {
+  --schedule-accent: #17685d;
+  --schedule-accent-soft: rgba(23, 104, 93, .1);
+  --schedule-border: rgba(127, 127, 127, .27);
+  --schedule-muted: #6f777a;
+  color: inherit;
+  font: inherit;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 8px 4px 16px;
+}
+.tuya-schedules *, .tuya-schedules *::before, .tuya-schedules *::after { box-sizing: border-box; }
+.tuya-schedules [hidden] { display: none !important; }
+.schedule-header, .presence-panel, .profile-toolbar, .bulk-actions, .thermostat-title,
+.thermostat-actions, .copy-actions, .preview-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.schedule-header { align-items: flex-start; margin: 8px 0 20px; }
+.schedule-eyebrow { font-size: .72rem; font-weight: 700; letter-spacing: .14em; color: var(--schedule-accent); margin-bottom: 6px; }
+.tuya-schedules h2 { font-size: 1.7rem; font-weight: 650; margin: 0 0 8px; }
+.tuya-schedules h3 { font-size: 1.06rem; font-weight: 650; margin: 0 0 5px; }
+.tuya-schedules p { margin: 0; }
+.schedule-header p, .profile-toolbar p, .presence-panel p, .schedule-footnote,
+.schedule-help, .last-confirmed, .thermostat-subtitle { color: var(--schedule-muted); font-size: .88rem; line-height: 1.5; }
+.schedule-header p { max-width: 620px; }
+.schedule-button { border: 1px solid var(--schedule-border); background: transparent; color: inherit; border-radius: 7px; padding: 8px 12px; font-size: .85rem; font-weight: 600; cursor: pointer; line-height: 1.4; white-space: nowrap; }
+.schedule-button:hover:not(:disabled) { background: var(--schedule-accent-soft); border-color: var(--schedule-accent); }
+.schedule-button:focus-visible, .schedule-tab:focus-visible, .tuya-schedules input:focus-visible, .tuya-schedules select:focus-visible { outline: 2px solid var(--schedule-accent); outline-offset: 2px; }
+.schedule-button.primary { color: #fff; background: var(--schedule-accent); border-color: var(--schedule-accent); }
+.schedule-button:disabled { opacity: .45; cursor: default; }
+.schedule-button.selected { border-color: var(--schedule-accent); background: var(--schedule-accent-soft); }
+.schedule-tabs { display: flex; gap: 5px; border-bottom: 1px solid var(--schedule-border); margin-bottom: 18px; }
+.schedule-tab { padding: 9px 13px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: inherit; cursor: pointer; font-size: .9rem; }
+.schedule-tab.active { color: var(--schedule-accent); border-bottom-color: var(--schedule-accent); font-weight: 650; }
+.presence-panel { padding: 16px; background: var(--schedule-accent-soft); border-radius: 9px; margin-bottom: 24px; flex-wrap: wrap; }
+.presence-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.profile-toolbar { flex-wrap: wrap; margin-bottom: 14px; }
+.profile-tabs { margin: 0; }
+.bulk-actions { margin: 14px 0; flex-wrap: wrap; }
+.select-all, .room-selection { font-size: .86rem; display: flex; align-items: center; gap: 8px; margin: 0; }
+.tuya-schedules input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--schedule-accent); }
+.thermostat-list { display: grid; gap: 18px; }
+.thermostat-card { border: 1px solid var(--schedule-border); border-radius: 10px; overflow: hidden; }
+.thermostat-card-header { padding: 16px; border-bottom: 1px solid var(--schedule-border); }
+.thermostat-title { align-items: flex-start; }
+.thermostat-title h3 { margin: 0; }
+.thermostat-subtitle { margin-top: 5px !important; }
+.room-selection { align-items: flex-start; }
+.room-selection input { margin-top: 3px; }
+.status-badge { padding: 3px 8px; border-radius: 99px; font-size: .72rem; line-height: 1.6; white-space: nowrap; background: rgba(127,127,127,.13); }
+.status-badge.verified, .status-badge.online { color: #17685d; background: rgba(23,104,93,.13); }
+.status-badge.partial, .status-badge.offline { color: #916015; background: rgba(180,130,40,.14); }
+.status-badge.failed { color: #ab3e35; background: rgba(190,60,50,.12); }
+.thermostat-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding-top: 16px; }
+.stat-label { color: var(--schedule-muted); font-size: .73rem; display: block; margin-bottom: 4px; }
+.stat-value { font-weight: 600; font-size: 1.03rem; }
+.stat-value.temperature { font-size: 1.4rem; font-weight: 500; }
+.thermostat-body { padding: 16px; }
+.thermostat-actions { margin-bottom: 12px; flex-wrap: wrap; }
+.thermostat-actions > div { display: flex; gap: 7px; flex-wrap: wrap; }
+.schedule-help { margin-bottom: 12px !important; }
+.schedule-grid-wrapper { width: 100%; overflow-x: auto; margin: 10px 0 12px; }
+.schedule-grid { width: 100%; min-width: 570px; border-collapse: collapse; table-layout: fixed; }
+.schedule-grid th, .schedule-grid td { border-bottom: 1px solid var(--schedule-border); padding: 9px 7px; vertical-align: top; }
+.schedule-grid th { font-size: .75rem; font-weight: 650; color: var(--schedule-muted); text-align: left; }
+.schedule-grid th:first-child { width: 90px; }
+.schedule-grid tbody th { color: inherit; font-size: .81rem; vertical-align: middle; }
+.event-inputs { display: flex; gap: 4px; align-items: center; }
+.event-inputs input, .copy-actions select { border: 1px solid var(--schedule-border); border-radius: 5px; color: inherit; background: transparent; font: inherit; font-size: .81rem; padding: 6px 4px; }
+.event-inputs input[type=time] { min-width: 0; width: 82px; }
+.event-inputs input[type=number] { width: 55px; min-width: 45px; }
+.event-inputs span { font-size: .72rem; color: var(--schedule-muted); }
+.copy-actions { justify-content: flex-start; flex-wrap: wrap; margin-bottom: 14px; }
+.copy-actions label { margin: 0; font-size: .8rem; color: var(--schedule-muted); }
+.copy-actions select { max-width: 185px; }
+.copy-actions .schedule-button { padding: 6px 9px; font-size: .78rem; }
+.native-programme { border-top: 1px solid var(--schedule-border); padding-top: 12px; margin-top: 12px; }
+.native-programme summary { cursor: pointer; font-size: .85rem; font-weight: 600; }
+.native-programme .schedule-grid { min-width: 440px; }
+.native-programme .schedule-grid td { font-size: .8rem; white-space: nowrap; }
+.last-confirmed { margin-top: 7px !important; }
+.draft-status { font-size: .78rem; margin-left: 4px; color: var(--schedule-muted); }
+.draft-status.unsaved { color: #916015; }
+.schedule-message, .schedule-notice { border: 1px solid var(--schedule-border); border-radius: 7px; padding: 12px; font-size: .85rem; line-height: 1.5; margin-bottom: 16px !important; }
+.schedule-message.error { border-color: rgba(190,60,50,.4); background: rgba(190,60,50,.07); }
+.schedule-message.success { border-color: rgba(23,104,93,.4); background: var(--schedule-accent-soft); }
+.schedule-empty { padding: 35px 16px; text-align: center; border: 1px dashed var(--schedule-border); border-radius: 8px; }
+.schedule-empty p { color: var(--schedule-muted); margin-top: 7px; }
+.schedule-footnote { margin-top: 18px !important; }
+.apply-preview { position: fixed; z-index: 1100; inset: 0; background: rgba(0,0,0,.45); display: flex; padding: 20px; align-items: flex-start; justify-content: center; overflow: auto; }
+.apply-preview-card { width: 100%; max-width: 800px; background: var(--bs-body-bg, #fff); color: var(--bs-body-color, #292d30); border-radius: 10px; padding: 22px; box-shadow: 0 18px 55px rgba(0,0,0,.2); }
+.apply-preview-card h3 { font-size: 1.2rem; margin-bottom: 10px; }
+.apply-preview-card > p { font-size: .88rem; line-height: 1.5; margin-bottom: 15px; }
+.preview-room { border-top: 1px solid var(--schedule-border); padding: 12px 0; }
+.preview-room h4 { font-size: .95rem; margin: 0 0 7px; }
+.preview-room ul { font-size: .81rem; max-height: 160px; overflow: auto; padding-left: 20px; margin: 0; }
+.preview-actions { justify-content: flex-end; }
+@media (prefers-color-scheme: dark) {
+  .tuya-schedules { --schedule-accent: #64c5b2; --schedule-accent-soft: rgba(85,181,161,.12); --schedule-muted: #a7afb2; }
+  .schedule-button.primary { background: #26796b; border-color: #26796b; }
+  .apply-preview-card { background: var(--bs-body-bg, #24282b); color: var(--bs-body-color, #eee); }
+  .status-badge.verified, .status-badge.online { color: #72d2bd; }
+  .status-badge.partial, .status-badge.offline, .draft-status.unsaved { color: #e5ba70; }
+  .status-badge.failed { color: #ef9b92; }
+}
+@media (max-width: 650px) {
+  .schedule-header { gap: 8px; }
+  .tuya-schedules h2 { font-size: 1.45rem; }
+  .presence-actions .schedule-button { font-size: .79rem; }
+  .thermostat-stats { grid-template-columns: repeat(2, 1fr); }
+  .thermostat-card-header, .thermostat-body { padding: 12px; }
+  .apply-preview { padding: 8px; }
+  .apply-preview-card { padding: 16px; }
+}

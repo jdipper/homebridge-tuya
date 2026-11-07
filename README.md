@@ -128,6 +128,14 @@ This option applies only to the specified device and does not replace the standa
 Garage door controllers that keep `switch_1=true` can opt in to contact-sensor-only state reads with `garageDoorUseContactSensorForState` in `options.deviceOverrides`. This keeps commands on `switch_1`, but reads HomeKit state from `doorcontact_state`.
 
 
+#### FastWarm thermostat programmes (experimental)
+
+For supported FastWarm ET-63 thermostats, the configuration page includes a shared
+weekly programme editor. Each room can have separate Home, Away and Holiday
+temperature programmes. Apple Home household automations select Home/Away;
+Holiday takes priority until switched off. See [setup, behaviour and current
+hardware-validation limits](docs/fastwarm-profiles.md).
+
 ## Limitations
 - **⚠️Don't forget to extend the API trial period every 6 months. Maybe you can set up a reminder in calendar.**
 - Using the same app account for multiple Homebridge/HomeAssistant instances is not supported. Please use separate app accounts for each instance.

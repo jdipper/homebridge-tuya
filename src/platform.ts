@@ -15,6 +15,9 @@ import BaseAccessory from './accessory/BaseAccessory';
 import { sanitizeName } from './util/util';
 import TuyaOpenAPI, { LOGIN_ERROR_MESSAGES } from './core/TuyaOpenAPI';
 import { initLogger } from './util/Logger';
+import ThermostatRuntime from './device/schedule/ThermostatRuntime';
+import ThermostatProfileAccessory from './accessory/ThermostatProfileAccessory';
+import { isFastWarmThermostat } from './device/profile/FastWarmThermostat';
 
 
 /**
@@ -33,6 +36,8 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
   public deviceManager?: TuyaDeviceManager;
   public accessoryHandlers: BaseAccessory[];
+  public thermostatRuntime?: ThermostatRuntime;
+  private thermostatProfileAccessory?: ThermostatProfileAccessory;
 
   validate() {
     let result;
@@ -135,6 +140,10 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       // run the method to discover / register your devices as accessories
       await this.initDevices();
     });
+    this.api.on('shutdown', () => {
+      void this.thermostatRuntime?.close().catch(error => this.log.warn('Thermostat runtime shutdown: %s', String(error)));
+      this.deviceManager?.mq.stop();
+    });
   }
 
   /**
@@ -209,6 +218,8 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
         this.addAccessory(device);
       });
 
+    await this.initThermostatRuntime();
+
     // remove unused accessories
     for (const cachedAccessory of this.cachedAccessories) {
       this.log.warn('Removing unused accessory from cache:', cachedAccessory.displayName);
@@ -221,6 +232,36 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     this.deviceManager!.on(TuyaDeviceManager.Events.DEVICE_STATUS_UPDATE, this.updateAccessoryStatus.bind(this));
     this.deviceManager!.on(TuyaDeviceManager.Events.DEVICE_DELETE, this.removeAccessory.bind(this));
 
+  }
+
+  private async initThermostatRuntime() {
+    const manager = this.deviceManager;
+    if (!manager?.devices.some(isFastWarmThermostat)) {
+      return;
+    }
+    const instanceId = ThermostatRuntime.instanceId({
+      projectType: this.options.projectType, endpoint: this.options.endpoint, accessId: this.options.accessId,
+      username: this.options.username, bridge: this.config._bridge?.username ?? this.config.name,
+    });
+    const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:thermostat-profiles:${instanceId}`);
+    const cached = this.cachedAccessories.find(accessory => accessory.UUID === uuid);
+    // Keep a cached controller paired even when a transient UI/runtime startup problem occurs.
+    if (cached) {
+      this.cachedAccessories = this.cachedAccessories.filter(accessory => accessory !== cached);
+    }
+    const runtime = new ThermostatRuntime(manager, this.api.user.persistPath(), instanceId, this.log);
+    try {
+      await runtime.start();
+      this.thermostatRuntime = runtime;
+      const accessory = cached ?? new this.api.platformAccessory('Heating Programmes', uuid);
+      this.thermostatProfileAccessory = new ThermostatProfileAccessory(this, accessory, runtime);
+      if (!cached) {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      }
+    } catch (error) {
+      await runtime.close();
+      this.log.warn('Thermostat programme controls unavailable: %s', String(error));
+    }
   }
 
   getDeviceConfig(device: TuyaDevice) {

@@ -4,7 +4,7 @@
     "singular": true,
     "headerDisplay": "",
     "footerDisplay": "",
-    "customUi": false,
+    "customUi": true,
     "schema": {
         "type": "object",
         "properties": {

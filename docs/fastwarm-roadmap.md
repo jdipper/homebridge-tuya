@@ -4,16 +4,21 @@ This development roadmap covers the FastWarm Smart WiFi 2.0 / ET-63 product
 `lmtejj3f4kafi2k1`. It records verified capabilities separately from features that
 still need implementation and device testing.
 
-The development branch now contains the temperature fix, programme transport,
+The development branch contains the temperature fix, programme transport,
 Home/Away/Holiday profile state, private runtime/UI relay, Apple Home selector
-switches and a shared editor. These are covered by simulated software tests;
-live schedule commands and offline execution still need hardware validation.
+switches and a shared editor. It also includes host-timed overrides, planned
+now/next periods, Holiday return/preheat, Away grace/guest hold, temperature
+history and programme version restore. A read-only pilot on 7 November 2026
+verified six measured temperatures and one complete native programme. Live
+schedule/override commands and offline execution still need hardware validation.
 See [the programme guide](fastwarm-profiles.md).
 
 The selected policy is household occupancy: anyone home selects Home, everyone
 away selects Away, and Holiday overrides both. All three are independent weekly
-temperature programmes with four periods per day; Holiday currently ends when
-its switch is turned off, then uses the latest household presence.
+temperature programmes with four periods per day. Holiday ends manually or at
+an optional return time, then uses the latest household presence/guest hold.
+Native adaptive start, open-window detection and floor-sensor controls remain
+deferred; this work does not expose or change them.
 
 ## Intended behaviour
 

@@ -159,6 +159,25 @@ describe('Homebridge custom UI runtime relay', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ['/controls/settings', { awayDelayMinutes: 30 }],
+    ['/rooms/save', { deviceId: 'fixture-room', name: 'Kitchen', timeZone: 'Europe/London', clockVerified: true }],
+    ['/presence/hold', { until: 2000000000000 }],
+    ['/holiday', { active: true, returnAt: 2000000000000, preheatMinutes: 60 }],
+    ['/overrides/preview', { deviceId: 'fixture-room', temperature: 21, endsAt: 'next-period' }],
+    ['/overrides/start', { previewId: 'fixture-preview', acceptHostDependentExpiry: true }],
+    ['/overrides/cancel', { deviceId: 'fixture-room' }],
+    ['/temperatures/history', { deviceId: 'fixture-room', hours: 24 }],
+    ['/profiles/history', { deviceId: 'fixture-room' }],
+    ['/profiles/restore', { deviceId: 'fixture-room', versionId: 'fixture-version', profile: 'holiday' }],
+    ['/controls/recover', { confirm: true }],
+  ])('relays the explicit heating control route %s without routing metadata', async (requestPath, payload) => {
+    const response = await call(requestPath as string, { ...payload as Record<string, unknown>, instanceId: descriptor.instanceId });
+    expect(response.success).toBe(true);
+    expect(handler).toHaveBeenCalledWith(requestPath, payload);
+    expect(output).not.toContain(descriptor.token);
+  });
+
   test('requires an explicit instance when several descriptors exist', async () => {
     const secondId = 'fedcba9876543210';
     const secondPath = path.join(persistPath, `TuyaRuntime.${secondId}.json`);

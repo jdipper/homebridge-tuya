@@ -2,8 +2,9 @@
 
 This branch contains an experimental schedule editor and runtime for the FastWarm
 Smart WiFi 2.0 / ET-63 product `lmtejj3f4kafi2k1`. Automated tests use simulated
-thermostats. A complete live programme read, one reversible write and a WAN outage
-test are required before treating the feature as hardware-verified.
+thermostats. A read-only pilot on 7 November 2026 verified six measured room
+temperatures through HomeKit and a complete 28-period native programme read.
+Reversible schedule/override writes and a WAN outage still require hardware tests.
 
 ## Programme selection
 
@@ -18,9 +19,22 @@ The Homebridge accessory **Heating Programmes** exposes two switches:
 - **Heating Holiday**: on selects Holiday regardless of household presence.
 
 Presence changes during Holiday are remembered. Turning Holiday off selects Home
-if anyone is home, or Away if everyone is out. Holiday has no automatic expiry in
-this version. Set the initial household presence before using the controls;
+if anyone is home, or Away if everyone is out. Holiday can end manually or at an
+optional return time. Set the initial household presence before using the controls;
 unknown presence is never assumed to mean that the home is empty.
+
+The default Away grace is 30 minutes; Home resumes as soon as someone arrives.
+The editor can change this delay, including setting zero for immediate Away.
+A guest hold keeps the Home programme selected until its chosen deadline even
+when all household members are out. Holiday takes priority over a guest hold.
+Actual occupancy remains visible separately from the effective heating choice.
+
+An optional Holiday preheat lead selects the Home programme before the planned
+return. At the return time, Holiday ends and the latest presence/guest hold
+selects Home or Away. These are Homebridge timers and need a working Tuya
+connection; they are separate from the thermostat's stored weekly programme.
+An overdue timer after restart requires explicit recovery instead of replaying
+old commands. Unknown occupancy at Holiday return also requires review.
 
 Create Apple Home automations for the first person arriving and the last person
 leaving, setting **Heating Someone Home** on or off respectively. A scene or
@@ -50,6 +64,47 @@ Manual application of one saved profile works before automatic enrollment. It
 does not change the household presence or Holiday selection. The editor shows
 requested and confirmed profiles separately, including saved changes that still
 need applying.
+
+Room aliases are local display names; SmartLife names and accessory identities
+are preserved. The dashboard shows the last reported and locally received
+temperature times, plus the current and next planned period from the last
+complete programme. Each room has an IANA time zone. Planned times do not prove
+the physical controller's clock is correct. Confirm its weekday and clock before
+using next-period override expiry; ambiguous daylight-saving transitions cannot
+be used for that expiry option.
+
+## Temporary temperatures
+
+A room can use a temporary target from 5–40°C in half-degree steps, ending at an
+explicit time within 24 hours or at its next verified programme boundary. The
+preview names the room, target, deadline and Homebridge/internet requirement.
+Starting selects native Hold without rewriting any weekly events. Native Hold
+has no verified device countdown, so Homebridge must send Scheduled mode at the
+deadline. If the bridge or connection stops, the Hold temperature can continue.
+
+The transport reads the current power, unit, mode and target before changing
+anything; it only starts from powered-on Scheduled mode in Celsius. A target or
+mode changed outside the override prevents restoration from overwriting it.
+Commands are single-attempt and read back; an uncertain outcome is shown as
+recovery-required. A failed expiry does not retry automatically. After restart,
+an unfinished override always needs explicit review/resume. Presence changes
+during the override are remembered and applied after successful restoration.
+
+## Local history and restore
+
+History starts from genuine reports received while this build runs; it does not
+backfill cached values as new measurements. Room readings, target reports and
+online/offline events remain distinct. Device measurement timestamps are kept
+separate from local receipt times. Genuine steady readings can be retained at a
+five-minute cadence. History is bounded to 30 days, downsampled and size-limited;
+temperature writes are batched to reduce disk writes, with a shutdown flush.
+No additional sensor polling or energy estimation is introduced.
+
+Saved drafts and complete confirmed native reads create immutable programme
+versions, capped at 50 per device. Repeated identical versions are deduplicated.
+Restoring puts the chosen version into a saved Home, Away or Holiday draft. It
+does not upload it: review and apply remain separate actions with fresh device
+conflict checking. Older files migrate without inventing historical timestamps.
 
 For this first version, select **seven-day programming in SmartLife** before
 applying profiles, and read the thermostat again. The editor checks the grouping

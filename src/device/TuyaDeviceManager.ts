@@ -22,6 +22,15 @@ enum Events {
   DEVICE_INFO_UPDATE = 'DEVICE_INFO_UPDATE',
   DEVICE_STATUS_UPDATE = 'DEVICE_STATUS_UPDATE',
   DEVICE_DELETE = 'DEVICE_DELETE',
+  THERMOSTAT_OBSERVATION = 'THERMOSTAT_OBSERVATION',
+}
+
+export interface ThermostatTemperatureObservation {
+  /** Raw measured Celsius in tenths; distinct from the setpoint. */
+  value: number;
+  reportedAt?: number;
+  receivedAt: number;
+  source: 'shadow' | 'mqtt';
 }
 
 enum TuyaMQTTProtocol {
@@ -43,6 +52,7 @@ export default class TuyaDeviceManager extends EventEmitter {
   private supplementalTemperatureReports = new Map<string, FastWarmTemperatureReport & { time: number }>();
   private supplementalTemperatureRequests = new Map<string, Promise<void>>();
   private supplementalTemperatureRetries = new Map<string, { nextAttempt: number; failures: number }>();
+  private temperatureObservations = new Map<string, ThermostatTemperatureObservation>();
 
   constructor(
     public api: TuyaOpenAPI,
@@ -226,6 +236,12 @@ export default class TuyaDeviceManager extends EventEmitter {
     }
   }
 
+  /** Metadata from a real accepted report; reading the cache never advances these times. */
+  getTemperatureObservation(deviceId: string): ThermostatTemperatureObservation | undefined {
+    const observation = this.temperatureObservations.get(deviceId);
+    return observation && { ...observation };
+  }
+
   private async fetchSupplementalTemperature(device: TuyaDevice): Promise<void> {
     try {
       const response = await this.api.get(`/v2.0/cloud/thing/${device.id}/shadow/properties`, { codes: 'RoomTemper' });
@@ -235,9 +251,13 @@ export default class TuyaDeviceManager extends EventEmitter {
         throw new Error(response.success === false ? `${response.code}: ${response.msg}` : 'RoomTemper was not returned');
       }
       this.supplementalTemperatureRetries.set(device.id, { failures: 0, nextAttempt: Date.now() + 5 * 60 * 1000 });
-      const status = this.applySupplementalTemperature(device, report);
+      const previous = this.temperatureObservations.get(device.id);
+      const status = this.applySupplementalTemperature(device, report, 'shadow');
       if (status) {
         this.emit(Events.DEVICE_STATUS_UPDATE, device, [status]);
+      }
+      if (this.temperatureObservations.get(device.id) !== previous) {
+        this.emit(Events.THERMOSTAT_OBSERVATION, device, this.getTemperatureObservation(device.id));
       }
     } catch (error) {
       const failures = (this.supplementalTemperatureRetries.get(device.id)?.failures ?? 0) + 1;
@@ -247,12 +267,19 @@ export default class TuyaDeviceManager extends EventEmitter {
     }
   }
 
-  private applySupplementalTemperature(device: TuyaDevice, report: FastWarmTemperatureReport): TuyaDeviceStatus | undefined {
+  private applySupplementalTemperature(
+    device: TuyaDevice, report: FastWarmTemperatureReport, source?: 'shadow' | 'mqtt',
+  ): TuyaDeviceStatus | undefined {
     const time = report.time ?? Date.now();
-    if (time < (this.supplementalTemperatureReports.get(device.id)?.time ?? 0)) {
+    if (time > Date.now() + 5 * 60_000 || time < (this.supplementalTemperatureReports.get(device.id)?.time ?? 0)) {
       return undefined;
     }
     this.supplementalTemperatureReports.set(device.id, { ...report, time });
+    if (source) {
+      this.temperatureObservations.set(device.id, {
+        value: report.value, reportedAt: report.time, receivedAt: Date.now(), source,
+      });
+    }
     const status = { code: 'temp_current', value: report.value };
     const existing = device.status.find(item => item.code === status.code);
     if (existing) {
@@ -572,14 +599,34 @@ export default class TuyaDeviceManager extends EventEmitter {
           return;
         }
 
+        const previousObservation = this.temperatureObservations.get(device.id);
+
         if (isFastWarmThermostat(device) && this.supplementalTemperatureDevices.has(device.id) && Array.isArray(status)) {
           const reports = status.map(getFastWarmTemperatureReport).filter(report => report !== undefined);
           // Remove raw entries, including malformed/stale reports, before updating the standard status cache.
           status = status.filter(item => !isFastWarmTemperatureReport(item));
           for (const report of reports) {
-            const temperature = this.applySupplementalTemperature(device, report);
+            const temperature = this.applySupplementalTemperature(device, report, 'mqtt');
             if (temperature) {
               status = [...status, temperature];
+            }
+          }
+        }
+
+        // A genuine standard schema does not need supplemental hydration, but its
+        // actual MQTT measurements still carry history/freshness metadata.
+        if (isFastWarmThermostat(device) && !this.supplementalTemperatureDevices.has(device.id) && Array.isArray(status)) {
+          const standard = status.find(item => item.code === 'temp_current');
+          if (standard) {
+            const report = getFastWarmTemperatureReport({ ...standard, dp_id: 105 });
+            if (report) {
+              const previous = this.temperatureObservations.get(device.id);
+              if ((report.time === undefined || report.time <= Date.now() + 5 * 60_000)
+                && (report.time === undefined || previous?.reportedAt === undefined || report.time >= previous.reportedAt)) {
+                this.temperatureObservations.set(device.id, {
+                  value: report.value, reportedAt: report.time, receivedAt: Date.now(), source: 'mqtt',
+                });
+              }
             }
           }
         }
@@ -593,6 +640,9 @@ export default class TuyaDeviceManager extends EventEmitter {
         }
 
         this.emit(Events.DEVICE_STATUS_UPDATE, device, status);
+        if (this.temperatureObservations.get(device.id) !== previousObservation) {
+          this.emit(Events.THERMOSTAT_OBSERVATION, device, this.getTemperatureObservation(device.id));
+        }
         break;
       }
       case TuyaMQTTProtocol.DEVICE_INFO_UPDATE: {

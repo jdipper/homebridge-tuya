@@ -23,6 +23,10 @@ until their representation is verified. Heating-state inference for this product
 uses Heat or Off; it cannot report Cooling.
 
 Validation includes mocked cloud responses, packet ordering, missing/invalid
-readings, API failures, discovery paths and HomeKit characteristics. A live
-installation and hardware test are still required. This change does not add a
-schedule editor or schedule writes.
+readings, API failures, discovery paths and HomeKit characteristics. The live
+pilot on 7 November 2026 verified six room readings and separate current/target
+HomeKit characteristics. Accepted reports retain separate source and receipt
+timestamps for the dashboard and bounded local history. Cache reads do not
+advance freshness, and implausibly future reports cannot poison the ordering
+watermark. The temperature handler itself does not write heating settings; see
+[the programme guide](fastwarm-profiles.md) for the separate explicit controls.

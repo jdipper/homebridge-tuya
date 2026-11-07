@@ -8,6 +8,10 @@ describe('Apple Home thermostat programme controls', () => {
       instanceId: '0123456789abcdef', state: { anyoneHome: null as boolean | null, holiday: false },
       handle: jest.fn(async () => ({})),
     });
+    Object.defineProperties(runtime, {
+      householdPresence: { get: () => runtime.state.anyoneHome },
+      holidayActive: { get: () => runtime.state.holiday },
+    });
     const information = { setCharacteristic: jest.fn(() => information) };
     const accessory = {
       getService: () => information,

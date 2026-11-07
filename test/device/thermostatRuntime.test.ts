@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import EventEmitter from 'events';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -8,6 +9,7 @@ import { collectFastWarmSchedule, FASTWARM_SCHEDULE_DAYS, FastWarmScheduleEventI
   FastWarmScheduleState } from '../../src/device/schedule/FastWarmSchedule';
 import { FastWarmScheduleApplyResult, FastWarmScheduleSnapshot } from '../../src/device/schedule/FastWarmScheduleManager';
 import ThermostatRuntime from '../../src/device/schedule/ThermostatRuntime';
+import { FastWarmOverrideBaseline } from '../../src/device/schedule/FastWarmOverrideTransport';
 import { ThermostatProfileId, ThermostatWeeklyProgramme } from '../../src/device/schedule/ThermostatProfiles';
 
 function programme(temperature: number): ThermostatWeeklyProgramme {
@@ -56,6 +58,12 @@ class MockScheduleTransport {
   close = jest.fn();
 }
 
+class MockOverrideTransport {
+  preview = jest.fn(async (_id: string): Promise<FastWarmOverrideBaseline> => ({ mode: 'smart', temperature: 20, power: true, unit: 'c' }));
+  startOverride = jest.fn(async (_id: string, _request: unknown) => undefined);
+  resumeOverride = jest.fn(async (_id: string, _request: unknown) => undefined);
+}
+
 interface Fixture {
   directory: string;
   runtime: ThermostatRuntime;
@@ -63,6 +71,7 @@ interface Fixture {
   grouping: Map<string, number>;
   mode: Map<string, string>;
   apiGet: jest.Mock;
+  overrideTransport: MockOverrideTransport;
 }
 
 const fixtures: Fixture[] = [];
@@ -70,6 +79,7 @@ const fixtures: Fixture[] = [];
 async function fixture(): Promise<Fixture> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tuya-runtime-test-'));
   const transport = new MockScheduleTransport();
+  const overrideTransport = new MockOverrideTransport();
   const grouping = new Map([['room-a', 0], ['room-b', 0]]);
   const mode = new Map([['room-a', 'smart'], ['room-b', 'smart']]);
   const devices = ['room-a', 'room-b'].map(id => ({
@@ -82,10 +92,10 @@ async function fixture(): Promise<Fixture> {
       { code: 'ControlMode', value: mode.get(id) }, { code: 'Event_Adaptive_Set', value: grouping.get(id) },
     ] } };
   });
-  const manager = { devices, getDevice: (id: string) => devices.find(device => device.id === id), api: { get: apiGet } };
+  const manager = Object.assign(new EventEmitter(), { devices, getDevice: (id: string) => devices.find(device => device.id === id), api: { get: apiGet, request: (_method: string, url: string) => apiGet(url) } });
   transport.activateProgramme.mockImplementation(async id => { mode.set(id, 'smart'); });
-  const runtime = new ThermostatRuntime(manager as unknown as TuyaDeviceManager, directory, '0123456789abcdef', { warn: jest.fn() }, transport);
-  const result = { directory, runtime, transport, grouping, mode, apiGet };
+  const runtime = new ThermostatRuntime(manager as unknown as TuyaDeviceManager, directory, '0123456789abcdef', { warn: jest.fn() }, transport, overrideTransport);
+  const result = { directory, runtime, transport, grouping, mode, apiGet, overrideTransport };
   fixtures.push(result);
   await runtime.start(false);
   return result;
@@ -93,8 +103,12 @@ async function fixture(): Promise<Fixture> {
 
 async function idle(runtime: ThermostatRuntime) {
   // Include the operation map because status can become verified just before its persistence finishes.
-  const internal = runtime as unknown as { running: Map<string, Promise<void>> };
+  const internal = runtime as unknown as {
+    running: Map<string, Promise<void>>; stateTransactions: Promise<void>; policyOperation: Promise<void>;
+  };
   for (let attempts = 0; attempts < 1000; attempts++) {
+    await internal.policyOperation;
+    await internal.stateTransactions;
     const busy = runtime.view().thermostats.some(device => device.sync.status === 'reading' || device.sync.status === 'applying');
     if (!busy && internal.running.size === 0) {
       return;
@@ -127,6 +141,7 @@ async function preview(runtime: ThermostatRuntime, profile: ThermostatProfileId 
 
 afterEach(async () => {
   jest.restoreAllMocks();
+  jest.useRealTimers();
   for (const item of fixtures.splice(0)) {
     await item.runtime.close();
     await fs.rm(item.directory, { recursive: true, force: true });
@@ -227,6 +242,7 @@ describe('presence and Holiday programme application', () => {
     await expect(save(runtime, 'home', 20, true)).rejects.toThrow('Home, Away and Holiday');
     expect(room(runtime).profiles).toEqual({});
     await configure(runtime, false);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     await runtime.handle('/presence', { home: true });
     await idle(runtime);
     expect(transport.apply).not.toHaveBeenCalled();
@@ -241,6 +257,7 @@ describe('presence and Holiday programme application', () => {
   test('Holiday wins during an ongoing Home application and ending Holiday uses the latest occupancy', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     const gate = deferred<void>();
     const started = deferred<void>();
     transport.apply.mockImplementationOnce(async (id, request) => {
@@ -267,6 +284,7 @@ describe('presence and Holiday programme application', () => {
   test('rapid intent changes coalesce to the last requested programme after the running operation', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     const gate = deferred<void>();
     const started = deferred<void>();
     transport.apply.mockImplementationOnce(async (id, request) => {
@@ -288,6 +306,7 @@ describe('presence and Holiday programme application', () => {
   test('partial failure clears queued intent and does not retry automatically', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     const gate = deferred<void>();
     const started = deferred<void>();
     transport.apply.mockImplementationOnce(async (id, _request) => {
@@ -318,6 +337,7 @@ describe('presence and Holiday programme application', () => {
   test('saving a newer template during application leaves its unapplied changes visible', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     const gate = deferred<void>();
     const started = deferred<void>();
     transport.apply.mockImplementationOnce(async (id, request) => {
@@ -339,6 +359,7 @@ describe('presence and Holiday programme application', () => {
   test('ending Holiday with unknown occupancy is rejected before choosing a fallback profile', async () => {
     const { runtime } = await fixture();
     await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     await runtime.handle('/holiday', { active: true });
     await idle(runtime);
     expect(runtime.view().presence.home).toBeNull();
@@ -351,6 +372,7 @@ describe('runtime persistence', () => {
   test('a failed intent persistence cannot erase a concurrently committed Holiday request', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     jest.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('First intent could not be persisted'));
     const home = runtime.handle('/presence', { home: true });
     const holiday = runtime.handle('/holiday', { active: true });
@@ -383,4 +405,411 @@ describe('runtime persistence', () => {
     expect(transport.apply).not.toHaveBeenCalled();
     expect(transport.activateProgramme).not.toHaveBeenCalled();
   });
+});
+
+
+describe('bridge-owned controls and timers', () => {
+  function fakeClock() {
+    jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
+  }
+
+  test('default Away grace and guest hold retain actual occupancy separately', async () => {
+    fakeClock();
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    expect(runtime.view().presence.awayDelayMinutes).toBe(30);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 30 });
+    await runtime.handle('/presence', { home: true });
+    await idle(runtime);
+    await runtime.handle('/presence', { home: false });
+    expect(runtime.view().presence.home).toBe(false);
+    expect(runtime.view().presence.effectiveHome).toBe(true);
+    jest.advanceTimersByTime(30 * 60000 - 1);
+    await idle(runtime);
+    expect(transport.apply).toHaveBeenCalledTimes(1);
+    await runtime.handle('/presence/hold', { until: Date.now() + 3600000 });
+    jest.advanceTimersByTime(1);
+    await idle(runtime);
+    expect(runtime.view().presence.effectiveHome).toBe(true);
+    jest.advanceTimersByTime(3600000);
+    await idle(runtime);
+    expect(runtime.view().presence.effectiveHome).toBe(false);
+    expect(room(runtime).sync.confirmedProfile).toBe('away');
+    expect(transport.apply).toHaveBeenCalledTimes(2);
+  });
+
+  test('arrival cancels a pending departure and unknown presence remains unknown after guest hold', async () => {
+    fakeClock();
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 30 });
+    await runtime.handle('/presence', { home: true });
+    await idle(runtime);
+    await runtime.handle('/presence', { home: false });
+    await runtime.handle('/presence', { home: true });
+    expect(runtime.view().presence.pendingAwayAt).toBeNull();
+    jest.advanceTimersByTime(3600000);
+    await idle(runtime);
+    expect(transport.apply).toHaveBeenCalledTimes(1);
+    const second = await fixture();
+    await configure(second.runtime, true);
+    await second.runtime.handle('/presence/hold', { until: Date.now() + 1000 });
+    await idle(second.runtime);
+    jest.advanceTimersByTime(1000);
+    await idle(second.runtime);
+    expect(second.runtime.view().presence.home).toBeNull();
+    expect(second.runtime.view().presence.effectiveHome).toBeNull();
+    expect(second.transport.apply).toHaveBeenCalledTimes(1);
+  });
+
+  test('Holiday preheat uses Home while keeping Holiday visible, then returns to latest actual occupancy', async () => {
+    fakeClock();
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
+    await runtime.handle('/presence', { home: false });
+    await idle(runtime);
+    await runtime.handle('/holiday', { active: true, returnAt: Date.now() + 3600000, preheatMinutes: 30 });
+    await idle(runtime);
+    jest.advanceTimersByTime(1800000);
+    await idle(runtime);
+    expect(runtime.view().holiday.active).toBe(true);
+    expect(runtime.view().holiday.preheating).toBe(true);
+    expect(room(runtime).sync.confirmedProfile).toBe('home');
+    jest.advanceTimersByTime(1800000);
+    await idle(runtime);
+    expect(runtime.view().holiday.active).toBe(false);
+    expect(room(runtime).sync.confirmedProfile).toBe('away');
+    expect(transport.apply.mock.calls.map(call => call[1].draft.days[0].events[0].temperature)).toEqual([16, 10, 20, 16]);
+  });
+
+  test('overdue policy restored after restart requires review and sends no startup command', async () => {
+    fakeClock();
+    const original = await fixture();
+    await configure(original.runtime, true);
+    await original.runtime.handle('/controls/settings', { awayDelayMinutes: 30 });
+    await original.runtime.handle('/presence', { home: true });
+    await idle(original.runtime);
+    await original.runtime.handle('/presence', { home: false });
+    await original.runtime.close();
+    jest.advanceTimersByTime(3600000);
+    const transport = new MockScheduleTransport();
+    const runtime = new ThermostatRuntime(original.runtime.manager, original.directory, '0123456789abcdef', { warn: jest.fn() }, transport);
+    fixtures.push({ ...original, runtime, transport });
+    await runtime.start(false);
+    expect(runtime.view().controls.recoveryRequired).toContain('while Homebridge was stopped');
+    expect(transport.apply).not.toHaveBeenCalled();
+    expect(transport.read).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(3600000);
+    await idle(runtime);
+    expect(transport.apply).not.toHaveBeenCalled();
+    await expect(runtime.handle('/controls/recover', {})).rejects.toThrow('explicitly confirm');
+  });
+});
+
+describe('temporary overrides', () => {
+  function fakeClock() {
+    jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
+  }
+
+  async function review(runtime: ThermostatRuntime, temperature = 23) {
+    const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature, endsAt: Date.now() + 3600000 });
+    return (response as unknown as { overridePreview: { id: string } }).overridePreview;
+  }
+
+  test('preview is immutable, start needs explicit host-expiry consent and expiry resumes exactly once', async () => {
+    fakeClock();
+    const { runtime, overrideTransport } = await fixture();
+    const plan = await review(runtime);
+    expect(overrideTransport.startOverride).not.toHaveBeenCalled();
+    await expect(runtime.handle('/overrides/start', { previewId: plan.id })).rejects.toThrow('Explicitly accept');
+    await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true, temperature: 30 });
+    await idle(runtime);
+    expect(overrideTransport.startOverride).toHaveBeenCalledWith('room-a', expect.objectContaining({ temperature: 23 }));
+    expect(room(runtime).override?.status).toBe('active');
+    jest.advanceTimersByTime(3600000);
+    await idle(runtime);
+    expect(overrideTransport.resumeOverride).toHaveBeenCalledTimes(1);
+    expect(room(runtime).override?.status).toBe('completed');
+    jest.advanceTimersByTime(3600000);
+    await idle(runtime);
+    expect(overrideTransport.resumeOverride).toHaveBeenCalledTimes(1);
+  });
+
+  test('presence is retained during override and only applies after successful explicit resume', async () => {
+    fakeClock();
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
+    await runtime.handle('/presence', { home: true });
+    await idle(runtime);
+    const plan = await review(runtime);
+    await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+    await idle(runtime);
+    await runtime.handle('/presence', { home: false });
+    await idle(runtime);
+    expect(transport.apply).toHaveBeenCalledTimes(1);
+    await runtime.handle('/schedules/read', { deviceIds: ['room-a'] });
+    await idle(runtime);
+    await runtime.handle('/overrides/cancel', { deviceId: 'room-a' });
+    await idle(runtime);
+    expect(transport.apply).toHaveBeenCalledTimes(2);
+    expect(room(runtime).sync.confirmedProfile).toBe('away');
+  });
+
+  test('an expiry failure is visible and never retries, including after restart', async () => {
+    fakeClock();
+    const original = await fixture();
+    const plan = await review(original.runtime);
+    await original.runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+    await idle(original.runtime);
+    original.overrideTransport.resumeOverride.mockRejectedValueOnce(new Error('Internet unavailable'));
+    jest.advanceTimersByTime(3600000);
+    await idle(original.runtime);
+    expect(room(original.runtime).override?.status).toBe('recovery-required');
+    expect(room(original.runtime).override?.error).toContain('will not retry');
+    jest.advanceTimersByTime(3600000);
+    await idle(original.runtime);
+    expect(original.overrideTransport.resumeOverride).toHaveBeenCalledTimes(1);
+    await original.runtime.close();
+    const overrideTransport = new MockOverrideTransport();
+    const runtime = new ThermostatRuntime(original.runtime.manager, original.directory, '0123456789abcdef',
+      { warn: jest.fn() }, original.transport, overrideTransport);
+    fixtures.push({ ...original, runtime, overrideTransport });
+    await runtime.start(false);
+    jest.advanceTimersByTime(3600000);
+    await idle(runtime);
+    expect(room(runtime).override?.status).toBe('recovery-required');
+    expect(overrideTransport.resumeOverride).not.toHaveBeenCalled();
+  });
+
+  test('active override restored before its deadline also needs review and never auto-resumes', async () => {
+    fakeClock();
+    const original = await fixture();
+    const plan = await review(original.runtime);
+    await original.runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+    await idle(original.runtime);
+    await original.runtime.close();
+    const overrideTransport = new MockOverrideTransport();
+    const runtime = new ThermostatRuntime(original.runtime.manager, original.directory, '0123456789abcdef',
+      { warn: jest.fn() }, original.transport, overrideTransport);
+    fixtures.push({ ...original, runtime, overrideTransport });
+    await runtime.start(false);
+    jest.advanceTimersByTime(3600000);
+    await idle(runtime);
+    expect(room(runtime).override?.status).toBe('recovery-required');
+    expect(overrideTransport.resumeOverride).not.toHaveBeenCalled();
+  });
+});
+
+describe('local room and programme history', () => {
+  test('room aliases and clock confirmation are local; restoring a programme changes only its draft', async () => {
+    const { runtime, transport } = await fixture();
+    await runtime.handle('/rooms/save', { deviceId: 'room-a', name: 'Kitchen', timeZone: 'Europe/London', clockVerified: true });
+    expect(room(runtime).name).toBe('Kitchen');
+    expect(runtime.manager.getDevice('room-a')?.name).toBe('room-a');
+    await save(runtime, 'home', 20);
+    await save(runtime, 'home', 21);
+    const old = room(runtime).programmeHistory.find(version => version.programme.days[0].events[0].temperature === 20)!;
+    await runtime.handle('/profiles/restore', { deviceId: 'room-a', versionId: old.id, profile: 'away' });
+    expect(room(runtime).profiles.away).toEqual(programme(20));
+    expect(room(runtime).profiles.home).toEqual(programme(21));
+    expect(transport.apply).not.toHaveBeenCalled();
+    expect(transport.activateProgramme).not.toHaveBeenCalled();
+  });
+
+  test('history records genuine observations and view reads create no points', async () => {
+    const { runtime } = await fixture();
+    const now = Date.now();
+    await runtime.recordTemperature('room-a', { at: now, sourceAt: now - 1000, currentTemperature: 18,
+      targetTemperature: 20, unit: 'c', online: true });
+    runtime.view(); runtime.view();
+    const response = await runtime.handle('/temperatures/history', { deviceId: 'room-a' });
+    expect((response as unknown as { temperatureHistory: unknown[] }).temperatureHistory).toHaveLength(1);
+  });
+});
+
+
+test('genuine current, target and online events preserve independent history fields and unsubscribe on close', async () => {
+  const { runtime } = await fixture();
+  const device = runtime.manager.getDevice('room-a')!;
+  runtime.manager.emit(TuyaDeviceManager.Events.THERMOSTAT_OBSERVATION, device,
+    { value: 185, receivedAt: Date.now(), reportedAt: Date.now() - 1000, source: 'mqtt' });
+  await idle(runtime);
+  runtime.manager.emit(TuyaDeviceManager.Events.DEVICE_STATUS_UPDATE, device, [{ code: 'temp_set', value: 220 }]);
+  await idle(runtime);
+  device.online = false;
+  runtime.manager.emit(TuyaDeviceManager.Events.DEVICE_INFO_UPDATE, device, {});
+  await idle(runtime);
+  const response = await runtime.handle('/temperatures/history', { deviceId: 'room-a' });
+  const points = (response as unknown as { temperatureHistory: Record<string, unknown>[] }).temperatureHistory;
+  expect(points).toHaveLength(3);
+  expect(points[0]).toEqual(expect.objectContaining({ currentTemperature: 18.5 }));
+  expect(points[0].targetTemperature).toBeUndefined();
+  expect(points[1]).toEqual(expect.objectContaining({ targetTemperature: 22 }));
+  expect(points[1].currentTemperature).toBeUndefined();
+  expect(points[2]).toEqual(expect.objectContaining({ online: false }));
+  expect(points[2].currentTemperature).toBeUndefined();
+  expect(points[2].targetTemperature).toBeUndefined();
+  await runtime.close();
+  expect(runtime.manager.listenerCount(TuyaDeviceManager.Events.THERMOSTAT_OBSERVATION)).toBe(0);
+  expect(runtime.manager.listenerCount(TuyaDeviceManager.Events.DEVICE_STATUS_UPDATE)).toBe(0);
+  expect(runtime.manager.listenerCount(TuyaDeviceManager.Events.DEVICE_INFO_UPDATE)).toBe(0);
+});
+
+test('expiry waits for an already running schedule read and then resumes once', async () => {
+  jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
+  const { runtime, transport, overrideTransport } = await fixture();
+  const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature: 23, endsAt: Date.now() + 1000 });
+  const plan = (response as unknown as { overridePreview: { id: string } }).overridePreview;
+  await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+  await idle(runtime);
+  const gate = deferred<void>();
+  const started = deferred<void>();
+  transport.read.mockImplementationOnce(async id => { started.resolve(); await gate.promise; return transport.snapshot(id); });
+  await runtime.handle('/schedules/read', { deviceIds: ['room-a'] });
+  await started.promise;
+  jest.advanceTimersByTime(1000);
+  expect(overrideTransport.resumeOverride).not.toHaveBeenCalled();
+  expect(room(runtime).override?.status).toBe('active');
+  gate.resolve();
+  await idle(runtime);
+  expect(overrideTransport.resumeOverride).toHaveBeenCalledTimes(1);
+  expect(room(runtime).override?.status).toBe('completed');
+});
+
+test('clock moving backward does not end an override early', async () => {
+  jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
+  const { runtime, overrideTransport } = await fixture();
+  const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature: 23, endsAt: Date.now() + 1000 });
+  const plan = (response as unknown as { overridePreview: { id: string } }).overridePreview;
+  await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+  await idle(runtime);
+  jest.setSystemTime(Date.now() - 1000);
+  jest.advanceTimersByTime(1000);
+  await idle(runtime);
+  expect(overrideTransport.resumeOverride).not.toHaveBeenCalled();
+  jest.advanceTimersByTime(1000);
+  await idle(runtime);
+  expect(overrideTransport.resumeOverride).toHaveBeenCalledTimes(1);
+});
+
+test('a failed resume persistence leaves visible recovery state and never sends a command', async () => {
+  const { runtime, overrideTransport } = await fixture();
+  const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature: 23, endsAt: Date.now() + 3600000 });
+  const plan = (response as unknown as { overridePreview: { id: string } }).overridePreview;
+  await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+  await idle(runtime);
+  jest.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('Disk full before resume'));
+  await runtime.handle('/overrides/cancel', { deviceId: 'room-a' });
+  await idle(runtime);
+  expect(overrideTransport.resumeOverride).not.toHaveBeenCalled();
+  expect(room(runtime).override?.status).toBe('recovery-required');
+  expect(room(runtime).override?.error).toContain('Disk full');
+});
+
+
+test('shutdown during prewrite persistence never issues Hold and retains explicit recovery state', async () => {
+  const { runtime, overrideTransport } = await fixture();
+  const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature: 23, endsAt: Date.now() + 3600000 });
+  const plan = (response as unknown as { overridePreview: { id: string } }).overridePreview;
+  const originalRename = fs.rename.bind(fs);
+  const gate = deferred<void>();
+  const started = deferred<void>();
+  jest.spyOn(fs, 'rename').mockImplementationOnce(async (oldPath, newPath) => {
+    started.resolve(); await gate.promise; await originalRename(oldPath, newPath);
+  });
+  await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+  await started.promise;
+  const closing = runtime.close();
+  gate.resolve();
+  await closing;
+  expect(overrideTransport.startOverride).not.toHaveBeenCalled();
+  expect(room(runtime).override?.status).toBe('recovery-required');
+  expect((runtime as unknown as { overrideTimers: Map<string, unknown> }).overrideTimers.size).toBe(0);
+});
+
+test('failed expiry retains latest occupancy for the later explicit resume', async () => {
+  jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
+  const { runtime, transport, overrideTransport } = await fixture();
+  await configure(runtime, true);
+  await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
+  await runtime.handle('/presence', { home: true });
+  await idle(runtime);
+  const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature: 23, endsAt: Date.now() + 1000 });
+  const plan = (response as unknown as { overridePreview: { id: string } }).overridePreview;
+  await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+  await idle(runtime);
+  await runtime.handle('/presence', { home: false });
+  overrideTransport.resumeOverride.mockRejectedValueOnce(new Error('Internet disconnected'));
+  jest.advanceTimersByTime(1000);
+  await idle(runtime);
+  expect(transport.apply).toHaveBeenCalledTimes(1);
+  expect(room(runtime).override?.status).toBe('recovery-required');
+  await runtime.handle('/overrides/cancel', { deviceId: 'room-a' });
+  await idle(runtime);
+  expect(overrideTransport.resumeOverride).toHaveBeenCalledTimes(2);
+  expect(transport.apply).toHaveBeenCalledTimes(2);
+  expect(room(runtime).sync.confirmedProfile).toBe('away');
+});
+
+test('temperature history writes are batched and shutdown flushes the final genuine sample', async () => {
+  jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
+  const { runtime, directory } = await fixture();
+  const rename = jest.spyOn(fs, 'rename');
+  await runtime.recordTemperature('room-a', { at: Date.now(), currentTemperature: 18, online: true, unit: 'c' });
+  expect(rename).not.toHaveBeenCalled();
+  jest.advanceTimersByTime(30000);
+  await idle(runtime);
+  expect(rename).toHaveBeenCalledTimes(1);
+  await runtime.recordTemperature('room-a', { at: Date.now(), currentTemperature: 19, online: true, unit: 'c' });
+  await runtime.close();
+  expect(rename).toHaveBeenCalledTimes(2);
+  const saved = JSON.parse(await fs.readFile(path.join(directory, 'TuyaThermostatProfiles.0123456789abcdef.json'), 'utf8'));
+  expect(saved.history.devices['room-a'].temperatures).toHaveLength(2);
+});
+
+test('resuming a temporary temperature never retries an unrelated failed programme upload', async () => {
+  const { runtime, transport } = await fixture();
+  await configure(runtime, true);
+  await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
+  await runtime.handle('/presence', { home: true });
+  await idle(runtime);
+  transport.apply.mockResolvedValueOnce({ status: 'failed', backup: transport.snapshot('room-a'),
+    planned: 0, applied: 0, error: 'The previous Away upload failed.' });
+  await runtime.handle('/presence', { home: false });
+  await idle(runtime);
+  expect(runtime.state.devices['room-a'].status).toBe('failed');
+  const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature: 23, endsAt: Date.now() + 3600000 });
+  const plan = (response as unknown as { overridePreview: { id: string } }).overridePreview;
+  await runtime.handle('/overrides/start', { previewId: plan.id, acceptHostDependentExpiry: true });
+  await idle(runtime);
+  await runtime.handle('/overrides/cancel', { deviceId: 'room-a' });
+  await idle(runtime);
+  expect(transport.apply).toHaveBeenCalledTimes(2);
+  expect(room(runtime).override?.status).toBe('completed');
+  expect(room(runtime).sync.status).toBe('failed');
+  expect(room(runtime).sync.error).toContain('previous Away upload failed');
+});
+
+test('a failed deadline save stops policy changes until explicit recovery', async () => {
+  jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
+  const { runtime, transport } = await fixture();
+  await configure(runtime, true);
+  await runtime.handle('/presence', { home: true });
+  await idle(runtime);
+  await runtime.handle('/presence', { home: false });
+  jest.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('Disk temporarily unavailable'));
+  jest.advanceTimersByTime(30 * 60000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  await idle(runtime);
+  expect(runtime.view().controls.recoveryRequired).toContain('Disk temporarily unavailable');
+  expect(transport.apply).toHaveBeenCalledTimes(1);
+  jest.advanceTimersByTime(60 * 60000);
+  await idle(runtime);
+  expect(transport.apply).toHaveBeenCalledTimes(1);
+  await runtime.handle('/controls/recover', { confirm: true });
+  await idle(runtime);
+  expect(transport.apply).toHaveBeenCalledTimes(2);
+  expect(room(runtime).sync.confirmedProfile).toBe('away');
 });

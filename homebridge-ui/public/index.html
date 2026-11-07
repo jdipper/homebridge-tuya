@@ -31,6 +31,10 @@
         <button id="away-control" class="schedule-button" type="button">Everyone away</button>
         <button id="holiday-control" class="schedule-button" type="button">Enable holiday</button>
       </div>
+      <details class="household-options" data-detail="household-options">
+        <summary>Presence, guests &amp; holiday return</summary>
+        <div id="household-options"></div>
+      </details>
     </section>
 
     <div class="profile-toolbar">
@@ -58,7 +62,7 @@
       <h3 id="preview-title">Review programme changes</h3>
       <p id="preview-description"></p>
       <div id="preview-content"></div>
-      <p class="schedule-notice">Applying changes writes a programme to each selected thermostat. Updates are sent one event at a time; a connection failure can leave a partially updated programme. The result is checked by reading it back.</p>
+      <p id="preview-notice" class="schedule-notice">Applying changes writes a programme to each selected thermostat. Updates are sent one event at a time; a connection failure can leave a partially updated programme. The result is checked by reading it back.</p>
       <div class="preview-actions">
         <button id="cancel-apply" class="schedule-button" type="button">Cancel</button>
         <button id="confirm-apply" class="schedule-button primary" type="button">Apply programme changes</button>

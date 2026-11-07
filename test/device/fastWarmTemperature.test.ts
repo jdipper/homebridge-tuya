@@ -201,6 +201,55 @@ describe('FastWarm raw temperature support', () => {
     expect(device.status.find(status => status.code === 'temp_current')?.value).toBe(195);
   });
 
+  test('distinguishes a shadow measurement time from when it was received and does not refresh cache timestamps', async () => {
+    get.mockResolvedValue(shadow(195, NOW - 3600000));
+    await manager.enrichDeviceStatus(device);
+    expect(manager.getTemperatureObservation(device.id)).toEqual({
+      value: 195, reportedAt: NOW - 3600000, receivedAt: NOW, source: 'shadow',
+    });
+    jest.spyOn(Date, 'now').mockReturnValue(NOW + 1000);
+    await manager.enrichDeviceStatus(device);
+    expect(manager.getTemperatureObservation(device.id)?.receivedAt).toBe(NOW);
+    const returned = manager.getTemperatureObservation(device.id)!;
+    returned.receivedAt = 1;
+    expect(manager.getTemperatureObservation(device.id)?.receivedAt).toBe(NOW);
+  });
+
+  test('an unchanged actual report still emits observation metadata after the target cache is updated', async () => {
+    await manager.enrichDeviceStatus(device);
+    const listener = jest.fn((room: TuyaDevice) => expect(room.status.find(item => item.code === 'temp_set')?.value).toBe(220));
+    manager.on(TuyaDeviceManager.Events.THERMOSTAT_OBSERVATION, listener);
+    jest.spyOn(Date, 'now').mockReturnValue(NOW + 60000);
+    await manager.onMQTTMessage('test', 4, {
+      devId: device.id, status: [{ dpId: 105, value: 195, t: NOW + 50000 }, { code: 'temp_set', value: 220 }],
+    });
+    expect(listener).toHaveBeenCalledWith(device, {
+      value: 195, reportedAt: NOW + 50000, receivedAt: NOW + 60000, source: 'mqtt',
+    });
+  });
+
+  test('stale, malformed and implausibly future raw reports do not advance observation freshness', async () => {
+    await manager.enrichDeviceStatus(device);
+    const listener = jest.fn();
+    manager.on(TuyaDeviceManager.Events.THERMOSTAT_OBSERVATION, listener);
+    for (const report of [{ value: 180, t: NOW - 1000 }, { value: 'bad', t: NOW + 1000 }, { value: 210, t: NOW + 3600000 }]) {
+      await manager.onMQTTMessage('test', 4, { devId: device.id, status: [{ dpId: 105, ...report }] });
+    }
+    expect(listener).not.toHaveBeenCalled();
+    expect(manager.getTemperatureObservation(device.id)?.reportedAt).toBe(NOW);
+    expect(device.status.find(item => item.code === 'temp_current')?.value).toBe(195);
+  });
+
+  test('genuine standard current-temperature MQTT reports also have source metadata', async () => {
+    device.schema.push({ ...device.schema[0], code: 'temp_current' });
+    device.status.push({ code: 'temp_current', value: 180 });
+    await manager.enrichDeviceStatus(device);
+    await manager.onMQTTMessage('test', 4, {
+      devId: device.id, status: [{ code: 'temp_current', value: 190, t: NOW }],
+    });
+    expect(manager.getTemperatureObservation(device.id)).toMatchObject({ value: 190, reportedAt: NOW, source: 'mqtt' });
+  });
+
   test.each(['home', 'custom', 'single'])('hydrates before returning a device from %s discovery', async kind => {
     if (kind === 'home') {
       const home = new TuyaHomeDeviceManager(api);

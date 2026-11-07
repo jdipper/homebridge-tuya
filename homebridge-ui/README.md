@@ -22,6 +22,39 @@ including activation of scheduled mode. The UI does not automatically apply
 drafts, including after reconnection. Reads and applies run in the platform;
 closing this editor does not stop them.
 
+Room cards show measured and target temperature separately, the last reading,
+and the current/next planned programme period. Programme editors, native
+programme reports, temporary temperatures and histories are collapsed initially;
+their open state and unsaved fields survive status polling. Room display names
+are local aliases, so the original SmartLife name remains visible for matching.
+Next-period expiry is available only after the user confirms the actual
+thermostat clock matches the configured IANA time zone. Planned transitions do
+not imply that the plugin has read the controller's internal clock.
+
+Temporary temperatures have a separate immutable preview and explicit start
+confirmation. The confirmation explains that the plugin selects Hold and needs
+Homebridge plus internet to restore scheduled mode at expiry. A failed expiry
+can leave the Hold temperature active. Cancel/recovery requests restoration;
+the UI displays the verified outcome or recovery error rather than assuming it
+worked. A temporary temperature does not rewrite the weekly programme.
+
+Household options configure an Away grace period (initially 30 minutes), a guest
+Home hold, and an optional Holiday return with a Home preheat lead. Timed
+programme changes need Homebridge and Tuya connectivity. Holiday remains the
+highest-priority household programme until its return/preheat transition or
+manual end. Interrupted policy changes expose an explicit recovery action that
+warns that enrolled thermostats may receive programmes.
+
+Temperature history is rendered using local SVG, with independent measured and
+reported-target series at measurement time (`sourceAt`, falling back to receipt
+time). A target-only report does not interrupt the measured line, and vice versa.
+Offline events break both series; gaps over 30 minutes between measured reports
+break the measured line. Reported targets use steps between their own reports,
+and neither line extends beyond its final report. These are reports, not
+continuous sampling. The chart does not measure energy.
+Programme history restores a selected version into a saved profile draft only;
+uploading it remains a separate review-and-apply action.
+
 ## Runtime relay
 
 The UI SDK server is a temporary child process. It never authenticates with
@@ -48,9 +81,20 @@ discovered. The relay removes this routing field before forwarding the body.
 | `/profiles/save` | `{ deviceId, profile, schedule, enabled }` |
 | `/schedules/apply` | `{ deviceIds, profile, preview: true }`, then `{ previewId }` |
 | `/presence` | `{ home: boolean }` |
-| `/holiday` | `{ active: boolean }` |
+| `/holiday` | `{ active: boolean, returnAt?: number \| null, preheatMinutes?: number }` |
+| `/controls/settings` | `{ awayDelayMinutes }` |
+| `/rooms/save` | `{ deviceId, name, timeZone?, clockVerified? }` |
+| `/presence/hold` | `{ until: number \| null }` |
+| `/overrides/preview` | `{ deviceId, temperature, endsAt: number \| "next-period" }` |
+| `/overrides/start` | `{ previewId, acceptHostDependentExpiry: true }` |
+| `/overrides/cancel` | `{ deviceId }` |
+| `/temperatures/history` | `{ deviceId, hours? }`; returns local temperature points |
+| `/profiles/history` | `{ deviceId }`; returns programme versions |
+| `/profiles/restore` | `{ deviceId, versionId, profile }`; saves draft only |
+| `/controls/recover` | `{ confirm: true }`; reconciles interrupted household timers |
 
-All runtime actions return a full sanitized view. The editor polls every two
+Control actions return a full sanitized view; history reads return their own
+point/version collections. The editor polls every two
 seconds while a thermostat is reading, queued or applying, otherwise every ten
 seconds. Failures retain open drafts and display the error without initiating
 new writes. Saved profiles and last-read schedules remain available from the

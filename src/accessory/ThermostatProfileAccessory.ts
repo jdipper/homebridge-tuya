@@ -17,26 +17,26 @@ export default class ThermostatProfileAccessory {
 
     presence.getCharacteristic(Characteristic.On)
       .onGet(() => {
-        if (runtime.state.anyoneHome === null) {
+        if (runtime.householdPresence === null) {
           const { HapStatusError, HAPStatus } = platform.api.hap;
           throw new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
         }
-        return runtime.state.anyoneHome;
+        return runtime.householdPresence;
       })
       .onSet(async value => {
         await runtime.handle('/presence', { home: Boolean(value) });
       });
     holiday.getCharacteristic(Characteristic.On)
-      .onGet(() => runtime.state.holiday)
+      .onGet(() => runtime.holidayActive)
       .onSet(async value => {
         await runtime.handle('/holiday', { active: Boolean(value) });
       });
 
     const update = () => {
-      if (runtime.state.anyoneHome !== null) {
-        presence.getCharacteristic(Characteristic.On).updateValue(runtime.state.anyoneHome);
+      if (runtime.householdPresence !== null) {
+        presence.getCharacteristic(Characteristic.On).updateValue(runtime.householdPresence);
       }
-      holiday.getCharacteristic(Characteristic.On).updateValue(runtime.state.holiday);
+      holiday.getCharacteristic(Characteristic.On).updateValue(runtime.holidayActive);
     };
     runtime.on('change', update);
     update();

@@ -93,6 +93,42 @@
 .preview-room h4 { font-size: .95rem; margin: 0 0 7px; }
 .preview-room ul { font-size: .81rem; max-height: 160px; overflow: auto; padding-left: 20px; margin: 0; }
 .preview-actions { justify-content: flex-end; }
+.household-options { width: 100%; border-top: 1px solid var(--schedule-border); padding-top: 12px; }
+.household-options > summary, .room-details > summary { cursor: pointer; font-size: .85rem; font-weight: 600; }
+#household-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; padding-top: 16px; }
+.control-group h4 { font-size: .9rem; margin: 0 0 12px; font-weight: 650; }
+.control-group > .schedule-button { margin: 9px 0; }
+.control-group .schedule-help { margin: 7px 0 !important; }
+.control-field { display: flex; flex-direction: column; gap: 5px; font-size: .78rem; margin: 0 0 9px; }
+.control-field > span { color: var(--schedule-muted); }
+.control-field input, .control-field select { border: 1px solid var(--schedule-border); border-radius: 5px; color: inherit; background: transparent; font: inherit; min-width: 0; min-height: 36px; padding: 7px 9px; width: 100%; }
+.control-field input:disabled, .control-field select:disabled { opacity: .55; }
+.inline-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 9px; margin: 13px 0 8px; }
+.inline-controls .control-field { margin: 0; min-width: 130px; max-width: 300px; }
+.inline-controls .schedule-button { margin: 0; }
+.room-details { border-top: 1px solid var(--schedule-border); padding-top: 12px; margin-top: 12px; }
+.room-tools .room-details:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.room-details[open] > summary { margin-bottom: 14px; }
+.room-details .thermostat-actions { margin-top: 14px; }
+.programme-editor { padding-top: 14px; }
+.programme-editor .thermostat-actions h3 { font-size: .94rem; }
+.now-next { display: flex; flex-direction: column; gap: 4px; padding-top: 12px; font-size: .85rem; }
+.now-next strong { font-weight: 600; }
+.now-next .last-confirmed { margin-top: 0 !important; font-size: .75rem; }
+.override-state { font-weight: 600; margin: 12px 0 7px !important; font-size: .88rem; }
+.temperature-chart { width: 100%; margin-top: 12px; overflow: hidden; }
+.temperature-chart svg { width: 100%; display: block; min-height: 150px; }
+.temperature-chart .chart-grid { stroke: var(--schedule-border); stroke-width: 1; }
+.temperature-chart .chart-label { fill: var(--schedule-muted); font-size: 11px; font-family: inherit; }
+.chart-current { fill: none; stroke: var(--schedule-accent); stroke-width: 2.5; stroke-linejoin: round; }
+.chart-target { fill: none; stroke: #b97c32; stroke-width: 2; stroke-dasharray: 6 4; }
+.chart-point { stroke-dasharray: none; }
+.chart-legend { font-size: .77rem; color: var(--schedule-muted); text-align: center; }
+.version-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--schedule-border); font-size: .8rem; }
+.version-comparison { flex-basis: 100%; margin: 0; padding: 0; border: 0; }
+.version-comparison > summary { font-weight: 400; font-size: .78rem; color: var(--schedule-muted); }
+.version-comparison ul { margin: 8px 0 0; padding-left: 20px; max-height: 200px; overflow: auto; }
+.recovery-notice { grid-column: 1 / -1; }
 @media (prefers-color-scheme: dark) {
   .tuya-schedules { --schedule-accent: #64c5b2; --schedule-accent-soft: rgba(85,181,161,.12); --schedule-muted: #a7afb2; }
   .schedule-button.primary { background: #26796b; border-color: #26796b; }
@@ -109,4 +145,8 @@
   .thermostat-card-header, .thermostat-body { padding: 12px; }
   .apply-preview { padding: 8px; }
   .apply-preview-card { padding: 16px; }
+  #household-options { grid-template-columns: 1fr; gap: 14px; }
+  .inline-controls { align-items: stretch; }
+  .inline-controls .control-field { flex: 1; max-width: none; }
+  .version-row { align-items: flex-start; flex-direction: column; }
 }

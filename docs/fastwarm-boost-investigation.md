@@ -5,9 +5,15 @@ Investigation date: 7 November 2026. Product: FastWarm Smart WiFi 2.0 / ET-63,
 
 The requirement is a temporary temperature that lasts for its chosen duration,
 including across normal programme events, and ends during an internet outage.
-A cloud command scheduled for later does not satisfy that requirement. A local
+A command executed in the cloud at the deadline does not satisfy that requirement. A local
 Homebridge timer can satisfy a WAN-only outage requirement if it can reach the
 thermostat over the LAN; it does not protect against Homebridge or LAN failure.
+
+The user prefers Tuya API queries for this investigation. Direct LAN work is
+deferred; it is not a prerequisite for the API route. Cloud configuration can
+still support offline expiry if it installs a suitable task on the thermostat
+before connectivity is lost. A cloud-only execution task cannot provide that
+guarantee.
 
 **New boosts remain disabled.** Both transport preview and start reject activation
 before any cloud read or write, with no configuration bypass. Explicit recovery
@@ -35,6 +41,15 @@ targets or mode-dependent command handling are plausible explanations; the
 precise firmware behaviour is not yet established. The incorrect atomic-write
 and resume assumptions were in our implementation, not evidence of a firmware
 defect.
+
+A subsequent read-only operation-log query (`type: 5,7`, with no code filter)
+returned standardized `temp_set` history for the same test. Cloud log timestamps
+record a report of 205 at 10:58:06.127 UTC and 220 at 10:58:06.231 UTC, 104
+milliseconds later. Subsequent records report 205 at 10:58:56.719 and 200 at
+11:00:10.924. These records corroborate the unexpected target, but do not establish
+how long the physical thermostat held either value. They do not include native
+mode transitions, prove that entering Hold recalled a stored target, or establish
+MCU command ordering.
 
 ## Native capabilities and terminology
 
@@ -71,8 +86,10 @@ it does not prove compatibility or countdown behaviour on these six devices.
 
 - A 15-second passive discovery window on Homebridge observed none of the six
   thermostats. Silence does not establish lack of LAN support: network placement,
-  broadcast visibility and device behaviour remain unknown. Network information
-  is awaiting the user; thermostat LAN addresses have not been established.
+  broadcast visibility and device behaviour remain unknown. Thermostat LAN
+  addresses have not been established. This route is now deferred in favour of
+  API queries; no further LAN discovery or address request is needed for the
+  current investigation.
 - A project-authenticated thing read succeeded. A local key is available for a
   future local status check, but no key, access token or full device identifier is
   included in this document or exposed to the editor.
@@ -92,6 +109,17 @@ it does not prove compatibility or countdown behaviour on these six devices.
   no existing task whose execution mode or device-download state can be examined.
   No task was created or modified. Neither the current public query nor the
   documented legacy query exposes a conclusive module-local capability flag.
+- The legacy `GET /v1.0/devices/{device_id}/timers` query also succeeded for
+  `…cdrjgm` and returned an empty list. These task lists are separate from the
+  thermostat's native weekly heating programme; empty lists do not mean that
+  programme is absent.
+- A seven-day operation-log query for timing events (`type: 10`) succeeded for
+  `…cdrjgm`, returning no logs and `has_next: false`. There is no existing timing
+  event in that response from which to infer execution location. An initial
+  command/report query with a mixed raw/standard code filter returned a parameter
+  error; removing the code filter and querying `type: 5,7` succeeded and supplied
+  the historical temperature reports above.
+  [Operation logs](https://developer.tuya.com/en/docs/cloud/bdc1e6f858?id=Kcp2l3tqdozts).
 - The existing plugin uses cloud API/MQTT transport. It has no implemented LAN
   transport or confirmed module-local timer integration.
 
@@ -124,15 +152,29 @@ that panel SDK API automatically interchangeable with the project's REST API or
 the plugin's existing Smart Home session.
 [Tuya Cloud Timer](https://developer.tuya.com/en/docs/iot/cloud-timing-interface?id=K9m1dlbzt0kdz).
 
+The documented REST timer query lists time, date, repeat pattern, actions and
+enablement, but no execution-location or device-download acknowledgement field.
+[REST timer query](https://developer.tuya.com/en/docs/cloud/5f40e70e79?id=Kconlsrgn2i9z).
+The official Panel SDK's `getDpLastTimer` and `getDpsLastTimer` use named app RPCs
+(`s.m.linkage.timer.nearest.get` and `s.m.linkage.timer.nearest.bat.get`) through
+`TYSdk.apiRequest`. They require an authenticated app/panel context, not merely
+Test2's REST project credentials or a developer-console browser login. No
+documented equivalent REST route has been established. Product timer enablement
+is an advanced product feature, so absence of a corresponding DP is not proof
+that the module lacks local timers.
+[Panel API context](https://developer.tuya.com/en/docs/iot/common-app-sdk?id=K9m1dldk26u64),
+[Product features](https://developer.tuya.com/en/docs/iot/define-product-features?id=K97vug7wgxpoq).
+
 Before relying on this route, establish product support, an accessible supported
-API, `runMode: 1`, confirmation that the task reached the device, correct date and
+API, confirmed local execution (for example `runMode: 1`), confirmation that the
+task reached the device, correct date and
 time-zone handling, and controlled offline execution. A one-off Smart-mode task
 alone is not yet a valid resume action: our earlier trace retained 20.5°C after
 returning to Smart. Neither multi-DP action ordering nor an exact end-to-end Hold
 sequence has been validated. Task download must be confirmed before beginning an
 indefinite Hold; uncertain activation or task outcomes must not be blindly retried.
 
-### Direct LAN fallback
+### Direct LAN fallback (deferred)
 
 Tuya supports local DP exchange, and the exact-product owner report makes a
 read-only status probe worthwhile once network placement and addresses are
@@ -166,7 +208,7 @@ active **at the deadline**, not necessarily the target captured when the boost
 started. A boost can cross multiple events, midnight or a time-zone transition.
 
 Use a complete verified programme and a verified thermostat clock/time zone.
-Where possible, re-read the programme locally before restoration so subsequent
+Where possible, re-read the programme before restoration so subsequent
 user edits are respected. Restoring a cached target without reconciling those
 edits could overwrite the user's intent. A module task with a precomputed target
 has the same conflict problem if the programme changes after task download.
@@ -175,7 +217,11 @@ demonstrated. Confirm both mode and target; Smart mode alone is insufficient.
 
 ## Staged validation plan
 
-The next unresolved capability cannot be established from the empty timer lists.
+The next unresolved capability cannot be established from the empty timer lists
+and timing logs. REST task creation and subsequent online execution could be
+tested through API calls, but successful responses alone would not establish
+offline expiry. The API-first route needs supported execution-mode/download
+metadata or product-specific confirmation before an offline claim can be made.
 A controlled, separately authorized test could use child lock ON then OFF on one
 identified thermostat, leaving its temperature and heating mode unchanged. An
 online test establishes only that scheduled commands work. Offline proof must
@@ -187,17 +233,19 @@ placement, observation and explicit recovery must be established before that tes
 
 ### 1. Finish read-only capability checks
 
-1. Establish the Homebridge and thermostat network placement and LAN addresses
-   from the user's network information. Do not infer device addresses from a
-   shared public address in cloud metadata.
-2. Attempt a bounded, authenticated local status read for one identified device,
-   without sending control DPs. Keep credentials owner-only and out of logs.
-3. Inspect existing SmartLife timer capabilities and task metadata without saving
-   a timer. Determine whether local execution and download confirmation are
-   exposed; distinguish absent capability from the project's missing permission.
-4. Review timestamped native reports from the earlier test and obtain any intact
-   DP127 descriptions. Seek a documented thermostat-specific countdown or native
-   clear-override action rather than assuming the Timer fields apply.
+1. Completed: authorize the approved Device Timer service, query all six public
+   task lists, query the first device's legacy list and timing logs, and retrieve
+   the earlier test's command/report history. Keep credentials owner-only and
+   out of reports.
+2. Establish a supported way to obtain app/panel timer metadata through APIs, or
+   obtain product-specific confirmation of local timer support. The currently
+   available REST project access does not establish this capability. Do not
+   treat named app RPCs as guessed public REST paths.
+3. Seek a documented thermostat-specific countdown or native clear-override
+   action rather than assuming Timer fields apply. Historical standardized
+   temperature reports do not replace native mode evidence.
+4. Leave LAN discovery and authenticated local probes deferred unless the user
+   later chooses that route.
 5. Keep activation gated while the protocol and failure guarantees remain unknown.
 
 ### 2. Present a concrete controlled-test proposal

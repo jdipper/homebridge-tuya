@@ -5,8 +5,8 @@ Investigation date: 7 November 2026. Product: FastWarm Smart WiFi 2.0 / ET-63,
 
 The requirement is a temporary temperature that lasts for its chosen duration,
 including across normal programme events, and ends during an internet outage.
-A command executed in the cloud at the deadline does not satisfy that requirement. A local
-Homebridge timer can satisfy a WAN-only outage requirement if it can reach the
+A command executed in the cloud at the deadline does not satisfy that
+requirement. A local Homebridge timer can satisfy a WAN-only outage requirement if it can reach the
 thermostat over the LAN; it does not protect against Homebridge or LAN failure.
 
 The user prefers Tuya API queries for this investigation. Direct LAN work is
@@ -165,10 +165,86 @@ that the module lacks local timers.
 [Panel API context](https://developer.tuya.com/en/docs/iot/common-app-sdk?id=K9m1dldk26u64),
 [Product features](https://developer.tuya.com/en/docs/iot/define-product-features?id=K97vug7wgxpoq).
 
+#### API authentication follow-up
+
+Inspection of the plugin confirms that `homeLogin()` calls
+`/v1.0/iot-01/associated-users/actions/authorized-login`. It receives an OpenAPI
+access token and continues to sign REST requests with the project key pair. It
+does not create a native SDK session or implement `TYSdk.apiRequest`. A second
+Homebridge login would not supply the missing bridge and was not performed.
+[Associated-user login](https://developer.tuya.com/en/docs/cloud/c40fc05907?id=Kawfjj0r2m82l).
+
+Two additional documented metadata reads were attempted for `…cdrjgm`:
+
+- `GET /v1.0/iot-03/devices/{device_id}/properties` succeeded, returning only
+  `embed_sys_env`. Its value was a non-JSON string of length 15; no timer
+  capability metadata was obtained. The value itself was not printed.
+- `GET /v1.0/iot-03/devices/{device_id}/capabilities-definition?tags=original`
+  returned `28841101`, API not subscribed. This describes control capabilities,
+  not a documented Cloud Timing flag, so an additional service was not enabled
+  speculatively.
+
+[Extended properties](https://developer.tuya.com/en/docs/cloud/8daa559eb9?id=Kb70ly0szgbbo),
+[Capability definitions](https://developer.tuya.com/en/docs/cloud/28bd2979ef?id=Kbjehd3ixr2v1).
+
+Tuya documents a possible bridge: OpenAPI
+`POST /v1.0/users/{uid}/ticket` issues a five-minute login-free ticket, then native
+SDK `loginWithTicket` consumes it. However, the Android documentation includes an
+incomplete-function comment immediately before that method. Compatibility with
+an existing SmartLife UID and a newly created SDK app is not established. The
+developer account currently has no SDK app configured. No app, credentials,
+ticket or extra user session was created.
+[Ticket issuance](https://developer.tuya.com/en/docs/iot/guide?id=Ka5olkhxcwnro),
+[SDK ticket login](https://developer.tuya.com/en/docs/app-development/android-account-information?id=Kceugteek39sb).
+
+A Panel MiniApp preview inside SmartLife could instead use its existing
+authenticated host. The documented development flow requires a product/panel
+association and experience-account setup. Test2's cloud access does not establish
+permission to develop the manufacturer's panel, and cross-product timer RPC
+access from a separate diagnostic MiniApp has not been established. An ordinary
+browser page cannot substitute for the SmartLife host.
+[MiniApp preview example](https://developer.tuya.com/cn/miniapp-codelabs/codelabs/panel-fan/index.html),
+[Product permissions](https://developer.tuya.com/cn/docs/iot-device-dev/sdj-device-access?id=Kb6jk4r5ma7uz).
+
+The remaining external dependency is Tuya confirmation of a supported API access
+route and this product's local-timer capability. The following inquiry is
+prepared for user review; submitting a support message requires explicit user
+authorization. Preparation is not a resolution of the capability gap.
+
+**Draft subject:** Device Timer: local execution metadata for SmartLife thermostats
+
+**Draft inquiry:**
+
+We are extending a Homebridge integration for FastWarm Smart WiFi 2.0 / ET-63
+thermostats, product ID `lmtejj3f4kafi2k1`, already paired with SmartLife. Our
+authorized cloud project Test2 has Device Timer enabled in Central Europe.
+Public v2 timer-list queries succeed for all six devices and return empty lists;
+the first device's legacy timer-list query also succeeds and returns an empty
+list. We need a supported API route to establish whether one-off expiry tasks
+will execute on the thermostat's Wi-Fi module during an internet outage.
+
+1. Which supported REST endpoint exposes local/cloud execution mode, local-timer
+   product support, and confirmation that a task has reached the device for an
+   associated SmartLife user?
+2. If this requires the app/panel API, can an OpenAPI login-free ticket
+   authenticate an existing SmartLife UID in a newly created SDK app? Please
+   specify required schema/app ownership and currently supported SDK methods.
+3. Alternatively, can a private diagnostic MiniApp inside SmartLife call
+   `s.m.linkage.timer.nearest.get` for this product without replacing its panel?
+   What product authorization and API permissions are required?
+4. Is Cloud Timing enabled for this product, and do one-off DP tasks continue
+   executing on its Wi-Fi module after internet loss?
+5. Can Device Timer tasks address this product's native `SetTemp` and
+   `ControlMode` properties, or only standardized function codes? We need to
+   establish supported sequencing for returning from Hold to Scheduled mode.
+
+This inquiry requests documentation/capability confirmation only. It does not
+request changes to the devices, product configuration, permissions or services.
+
 Before relying on this route, establish product support, an accessible supported
 API, confirmed local execution (for example `runMode: 1`), confirmation that the
-task reached the device, correct date and
-time-zone handling, and controlled offline execution. A one-off Smart-mode task
+task reached the device, correct date and time-zone handling, and controlled
+offline execution. A one-off Smart-mode task
 alone is not yet a valid resume action: our earlier trace retained 20.5°C after
 returning to Smart. Neither multi-DP action ordering nor an exact end-to-end Hold
 sequence has been validated. Task download must be confirmed before beginning an

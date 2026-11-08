@@ -1,36 +1,99 @@
-# @homebridge-plugins/homebridge-tuya
+# Homebridge Tuya — FastWarm fork
 
-[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=for-the-badge&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
+[![Build and Lint](https://github.com/jdipper/homebridge-tuya/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/jdipper/homebridge-tuya/actions/workflows/build.yml)
+[![MIT license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-![node](https://badgen.net/npm/node/@homebridge-plugins/homebridge-tuya)
-<img alt="homebridge badge" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fgithub.com%2Fhomebridge-plugins%2Fhomebridge-tuya%2Fraw%2Frefs%2Fheads%2Flatest%2Fpackage.json&query=%24.engines.homebridge&label=homebridge&color=%23491F59">
+This is [jdipper's fork](https://github.com/jdipper/homebridge-tuya) of
+[homebridge-plugins/homebridge-tuya](https://github.com/homebridge-plugins/homebridge-tuya),
+with FastWarm thermostat temperature support, a household programme editor and
+security fixes. The original project builds on `0x5e/homebridge-tuya-platform`.
 
+**`main` contains the combined build for this fork.** Security and thermostat
+display fixes also have separate branches for possible upstream pull requests.
+The scheduling features are maintained in this fork. See
+[branches and upstream contributions](#branches-and-upstream-contributions).
 
-[![Sponsor](https://img.shields.io/badge/Sponsor-❤-ff69b4)](https://github.com/sponsors/tassy-h)
-[![version](https://badgen.net/npm/v/@homebridge-plugins/homebridge-tuya)](https://npmjs.com/package/@homebridge-plugins/homebridge-tuya)
-![size](https://img.shields.io/npm/unpacked-size/@homebridge-plugins/homebridge-tuya)
-[![npm-downloads](https://badgen.net/npm/dt/@homebridge-plugins/homebridge-tuya)](https://npmjs.com/package/@homebridge-plugins/homebridge-tuya)
-[![mit-license](https://badgen.net/npm/license/@homebridge-plugins/homebridge-tuya)](https://github.com/homebridge-plugins/homebridge-tuya/blob/main/LICENSE)
-[![Build and Lint](https://github.com/homebridge-plugins/homebridge-tuya/actions/workflows/build.yml/badge.svg)](https://github.com/homebridge-plugins/homebridge-tuya/actions/workflows/build.yml)
-
-
-
-
-Forked from 0x5e/homebridge-tuya-platform, with a focus on fixing bugs and adding new device support.
-
-
-
+The npm package name remains `@homebridge-plugins/homebridge-tuya`. The npm release
+and Homebridge verification status belong to the upstream project; this fork is
+not a separately verified release. Build this repository to use its additions.
 
 ## Features
 
-- Optimized and improved code for better readability and maintainability.
-- Enhanced stability.
-- Reduced duplicate code.
-- Fewer API errors.
-- Lower development costs for new accessory categories.
-- Supports Tuya Scenes (Tap-to-Run).
-- Includes the ability to override device configurations, which enables support for "non-standard" DPs.
-- Supports over 60+ device categories, including most light, switch, sensor, camera, lock, IR remote control, etc.
+- Measured room temperature shown separately from the target on supported FastWarm
+  Smart WiFi 2.0 / ET-63 thermostats, including native temperature updates.
+- SmartLife room names in the Homebridge editor, with optional local aliases.
+- Independent **Home**, **Away** and **Holiday** weekly programmes per room, each
+  with four temperature periods per day.
+- Import the programmes already stored on the thermostats, or use one shared
+  editor to prepare a programme for all or selected rooms.
+- Separate draft saving, preview and application, with complete native programme
+  readback and confirmation for each room.
+- Apple Home switches for household presence and Holiday, plus an Away delay,
+  guest hold and optional Holiday return/preheat time in Homebridge.
+- Local temperature history and saved programme versions.
+- Credential redaction, private diagnostic/state files and cancellation of
+  superseded smart-lock requests.
+- The upstream Tuya device integrations, Scenes (Tap-to-Run) and configurable
+  device/schema overrides.
+
+FastWarm support targets product ID `lmtejj3f4kafi2k1`; Celsius is the verified
+temperature format. See [room temperature support](docs/fastwarm-temperature.md),
+[programme controls](docs/fastwarm-profiles.md) and the
+[editor guide](homebridge-ui/README.md).
+
+## Getting started with FastWarm
+
+1. Install this fork and configure its existing Tuya cloud connection using the
+   [configuration guide](#configuration).
+2. Open the Tuya plugin's configuration page in Homebridge and choose
+   **Thermostats**. Select seven-day programming in SmartLife before applying
+   weekly profiles.
+3. Choose a Home, Away or Holiday profile and use **Load stored programmes** to
+   import each room's current programme. Use **Edit programme for all rooms** for
+   one shared editor, with room selection to limit its scope.
+4. Save the drafts, then choose **Review & apply**. Saving or importing a draft
+   does not change the heating; application uploads the programme and selects
+   Scheduled mode. Check the room confirmations after application.
+5. Save all three profiles for a room before enabling **Use saved profiles for
+   automatic household changes**. That room will then follow subsequent household
+   selections.
+
+The two separate accessories in Apple Home select household programmes:
+
+| Accessory | On | Off |
+| --- | --- | --- |
+| Heating Home | Select Home | Select Away after the configured delay |
+| Heating Holiday | Select Holiday, with priority over presence | Resume the Home/Away selection |
+
+Set the initial household presence, then configure automations to turn **Heating
+Home** on when the first person arrives and off when the last person leaves.
+Presence changes during Holiday are remembered. The default Away delay is 30
+minutes and can be changed in the editor.
+
+Apple Home provides these on/off controls; the programme tables, application
+progress and Holiday return date/time are in Homebridge. Expand **Presence,
+guests & holiday return** to set a return time and optional Home preheat lead.
+Saving a Holiday return enables Holiday immediately. At the deadline, Holiday
+ends and the latest presence/guest hold chooses Home or Away.
+Unknown presence or an overdue return after a restart requires review in
+Homebridge.
+
+## Current validation limits
+
+- **Boosts and temporary setbacks are disabled.** Hardware testing has not yet
+  established reliable Hold and timed restoration across programme changes.
+- Programme uploads, household profile changes and Holiday return/preheat need
+  Homebridge running with a working Tuya internet connection.
+- The thermostat stores its uploaded weekly programme. Execution during a WAN
+  outage, clock retention after power loss and daylight-saving behaviour still
+  need hardware validation.
+- Each room is checked against all 28 native periods after an upload. An
+  interrupted upload can leave a partial programme. Review a failure and use
+  **Verify saved Home/Away/Holiday programme** for a fresh read-only check before
+  deciding whether to apply again.
+
+The [programme guide](docs/fastwarm-profiles.md) describes conflict handling,
+confirmation, restart recovery and the remaining hardware checks.
 
 
 ## Supported Tuya Devices
@@ -42,18 +105,43 @@ See [CHANGELOG.md](./CHANGELOG.md)
 
 
 ## Installation
-Before using this plugin, please make sure to uninstall `homebridge-tuya-platform` first as these two plugins cannot run simultaneously. However, the configuration files are compatible, so there's no need to delete them.
 
-#### For Homebridge Web UI Users
-Go to plugin page, search for `@homebridge-plugins/homebridge-tuya` and install it.
+Use a Node.js version supported by your Homebridge installation; the plugin's
+version ranges are listed in [package.json](./package.json). Preserve your
+Homebridge configuration and persist directory when replacing an installation.
+The older `homebridge-tuya-platform` plugin cannot run alongside this package.
 
+### Build this fork
 
-#### For Homebridge Command Line Users
+Compiled files are not tracked in Git, so build before installing:
 
-Run the following command in the terminal:
+```sh
+git clone --branch main --single-branch https://github.com/jdipper/homebridge-tuya.git
+cd homebridge-tuya
+npm ci
+npm run build
+npm pack --ignore-scripts
 ```
-npm install @homebridge-plugins/homebridge-tuya
+
+Copy the generated `.tgz` to the Homebridge host and install it using that host's
+plugin installation method. For a local npm-managed Homebridge installation,
+run the following from its storage directory, replacing the example path with
+the actual archive path:
+
+```sh
+npm install --save /absolute/path/to/generated-package.tgz
 ```
+
+Restart the Tuya child bridge, or Homebridge if it does not use a child bridge.
+Keep the existing `TuyaPlatform` configuration. The fork uses the same package
+and platform names as upstream, so this replaces the installed implementation.
+
+### Upstream npm release
+
+Searching Homebridge's plugin catalogue for `@homebridge-plugins/homebridge-tuya`,
+or running `npm install @homebridge-plugins/homebridge-tuya`, installs the upstream
+release. It does not select this fork's `main` branch. Use the built archive to
+keep this fork's additions when updating.
 
 
 ## Configuration
@@ -77,7 +165,9 @@ Before you can configure, you must go to the [Tuya IoT Platform](https://iot.tuy
     - IR Control Hub Open Service (for IR devices)
     - Smart Home Scene Linkage (for scenes)
     - Smart Lock Open Service (for Lock devices)
-- **⚠️Remember to extend the API trial period every 6 months here [Tuya IoT Platform > Cloud > Cloud Services > IoT Core](https://iot.tuya.com/cloud/products/detail?abilityId=1442730014117204014&id=p1668587814138nv4h3n&abilityAuth=0&tab=1) (the first-time subscription only gives you 1 month).**
+- Check the active services and expiry dates in your Tuya cloud project. Access
+  must remain active for the plugin's cloud operations; trial and renewal terms
+  are managed by Tuya.
 
 #### For "Custom" Project
 
@@ -140,7 +230,7 @@ select Home/Away, with Holiday taking priority. See [setup, behaviour and curren
 hardware-validation limits](docs/fastwarm-profiles.md).
 
 ## Limitations
-- **⚠️Don't forget to extend the API trial period every 6 months. Maybe you can set up a reminder in calendar.**
+- Tuya cloud API access must remain active; check the expiry dates in your project.
 - Using the same app account for multiple Homebridge/HomeAssistant instances is not supported. Please use separate app accounts for each instance.
 - The plugin requires an internet connection to the Tuya Cloud and does not support the LAN protocol. See [#90](https://github.com/homebridge-plugins/homebridge-tuya/issues/90) for more information.
 
@@ -238,20 +328,45 @@ If you are unable to receive any MQTT logs while controlling the device, it like
 By submitting the device information JSON and MQTT logs, you can help us support new device categories.
 
 
-## Contributing
+## Branches and upstream contributions
 
-Please see https://github.com/homebridge/homebridge-plugin-template#setup-development-environment for setup development environment.
+| Branch | Purpose | Upstream PR base |
+| --- | --- | --- |
+| `main` | Combined build: temperatures, security fixes and fork-specific scheduling | Maintained in this fork |
+| `fix/security-hardening` | Credential handling, private diagnostic files, lock cancellation and dependency updates | `homebridge-plugins/homebridge-tuya:latest` |
+| `fix/fastwarm-room-temperature` | Measured temperature and native target reporting for FastWarm thermostats | `homebridge-plugins/homebridge-tuya:latest` |
+| `feat/fastwarm-native-schedules` | Scheduling development and investigation history | Maintained in this fork |
 
-PRs and issues are welcome.
+To propose a fix upstream, use **Compare across forks** on the original
+repository. Select its `latest` branch as the base and the relevant `jdipper` fix
+branch as the head. Those branches contain no scheduling changes and remain
+independent of one another. GitHub compares the selected branches; the fork's
+default branch does not determine the PR contents.
 
-# 
-Thank you for spend time using the project. If it helps you, don't hesitate to give it a star 🌟:-)
+Make any reviewer-requested changes on the relevant fix branch, then merge that
+branch back into `main`. The scheduling editor, household controls and related
+runtime are maintained here and are not intended for the upstream PRs.
 
-## Sponsors
+### Development checks
 
-<img class="circle avatar-user" src="https://avatars.githubusercontent.com/u/314622938?s=52&amp;v=4" width="26" height="26" alt="@mlm-it">
+```sh
+npm ci
+npm run lint
+npm run build
+npm test -- --runInBand --watchman=false --testPathIgnorePatterns test/home.test.ts test/custom.test.ts
+```
 
-This project is supported by generous sponsors on GitHub Sponsors.  
-Thank you for helping me continue improving and maintaining this software!
+The excluded `home` and `custom` suites use a real Tuya account; the command above
+runs the offline test suite. Live investigations under `tools/` are separate from
+the ordinary tests and can issue real device commands when explicitly enabled.
 
-[![Sponsor me](https://img.shields.io/badge/Sponsor%20me-❤-ff69b4)](https://github.com/sponsors/tassy-h)
+For general plugin development, see the
+[Homebridge development guide](https://github.com/homebridge/homebridge-plugin-template#setup-development-environment).
+
+## Attribution
+
+The broad Tuya device support and original configuration documentation come from
+[homebridge-plugins/homebridge-tuya](https://github.com/homebridge-plugins/homebridge-tuya),
+originally forked from `0x5e/homebridge-tuya-platform`. Upstream's published npm
+package and Homebridge verification apply to that project. Support its maintainer
+through [tassy-h's GitHub Sponsors page](https://github.com/sponsors/tassy-h).

@@ -1,16 +1,17 @@
 {
   "name": "@homebridge-plugins/homebridge-tuya",
-  "displayName": "Homebridge Tuya",
-  "version": "2.7.1",
-  "description": "Forked from 0x5e/homebridge-tuya-platform, with a focus on fixing bugs and adding new device support.",
+  "displayName": "Homebridge Tuya (jdipper FastWarm)",
+  "version": "2.7.2-jdipper.1",
+  "private": true,
+  "description": "jdipper's Homebridge Tuya fork with FastWarm room temperatures, household programmes and security fixes.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/homebridge-plugins/homebridge-tuya"
+    "url": "https://github.com/jdipper/homebridge-tuya"
   },
-  "homepage": "https://github.com/homebridge-plugins/homebridge-tuya#readme",
+  "homepage": "https://github.com/jdipper/homebridge-tuya#readme",
   "bugs": {
-    "url": "https://github.com/homebridge-plugins/homebridge-tuya/issues"
+    "url": "https://github.com/jdipper/homebridge-tuya/issues"
   },
   "funding": [
     {

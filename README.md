@@ -13,9 +13,13 @@ display fixes also have separate branches for possible upstream pull requests.
 The scheduling features are maintained in this fork. See
 [branches and upstream contributions](#branches-and-upstream-contributions).
 
-The npm package name remains `@homebridge-plugins/homebridge-tuya`. The npm release
-and Homebridge verification status belong to the upstream project; this fork is
-not a separately verified release. Build this repository to use its additions.
+The npm package name remains `@homebridge-plugins/homebridge-tuya` to preserve
+existing configuration and accessories. Fork releases use a distinct version,
+starting with **`2.7.2-jdipper.1`**, and display **Homebridge Tuya (jdipper
+FastWarm)**. The package is marked `private` to prevent npm publication and
+Homebridge UI's upstream npm update suggestions. The upstream npm release and
+Homebridge verification status belong to the original project; this fork is not
+a separately verified release.
 
 ## Features
 
@@ -110,6 +114,21 @@ Use a Node.js version supported by your Homebridge installation; the plugin's
 version ranges are listed in [package.json](./package.json). Preserve your
 Homebridge configuration and persist directory when replacing an installation.
 The older `homebridge-tuya-platform` plugin cannot run alongside this package.
+
+### Install a compiled fork release
+
+Download a compiled `.tgz` from this fork's
+[GitHub releases](https://github.com/jdipper/homebridge-tuya/releases). For a
+local npm-managed Homebridge installation, run this from its storage directory:
+
+```sh
+npm install --save-exact 'https://github.com/jdipper/homebridge-tuya/releases/download/v2.7.2-jdipper.1/homebridge-plugins-homebridge-tuya-2.7.2-jdipper.1.tgz'
+```
+
+This records the fork release URL as the package source. Update by installing a
+new compiled fork release explicitly; the package does not use upstream npm
+updates. Restart the Tuya child bridge after installation. Keep the existing
+`TuyaPlatform` configuration.
 
 ### Build this fork
 

@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## [2.7.2-jdipper.1] - (2026.11.08)
+
+### Changed
+- Identify this fork separately in Homebridge and install its compiled releases from jdipper/homebridge-tuya. Disable npm publication and upstream catalogue update suggestions for this private package build.
 
 ### Added
 - Experimental FastWarm weekly programme editor with separate Home, Away and Holiday temperature profiles, household presence controls in Apple Home, explicit preview/apply and fresh device readback. See [programme controls and validation limits](docs/fastwarm-profiles.md).

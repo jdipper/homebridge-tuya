@@ -1,0 +1,136 @@
+name: Publish fork to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Check the package, stage it for npm approval, or publish it
+        type: choice
+        required: true
+        default: check
+        options:
+          - check
+          - stage
+          - publish
+      npm_tag:
+        description: latest is the normal install/update channel; beta is opt-in
+        type: choice
+        required: true
+        default: latest
+        options:
+          - latest
+          - beta
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-npm-publication
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'jdipper/homebridge-tuya' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Use npm with trusted and staged publishing support
+        run: npm install --global npm@11.21.2
+      - name: Validate fork identity
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const pkg = require('./package.json');
+          const lock = require('./package-lock.json');
+          assert.equal(pkg.name, '@jdipper/homebridge-tuya');
+          assert.notEqual(pkg.private, true);
+          assert.equal(pkg.repository.url, 'git+https://github.com/jdipper/homebridge-tuya.git');
+          assert.equal(pkg.publishConfig.access, 'public');
+          assert.equal(lock.name, pkg.name);
+          assert.equal(lock.version, pkg.version);
+          assert.equal(lock.packages[''].name, pkg.name);
+          assert.equal(lock.packages[''].version, pkg.version);
+          NODE
+      - run: npm ci
+      - run: npm run lint
+      - name: Run offline tests
+        run: npm test -- --runInBand --watchman=false --silent --testPathIgnorePatterns test/home.test.ts test/custom.test.ts
+      - run: npm run build
+      - name: Pack and inspect the compiled package
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-package"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/npm-package" > "$RUNNER_TEMP/npm-pack.json"
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const report = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'npm-pack.json'), 'utf8'));
+          assert.equal(report.length, 1);
+          const pkg = require('./package.json');
+          const packed = report[0];
+          assert.equal(packed.name, pkg.name);
+          assert.equal(packed.version, pkg.version);
+          const files = new Set(packed.files.map(file => file.path));
+          for (const file of ['dist/index.js', 'dist/device/schedule/ThermostatRuntime.js', 'homebridge-ui/server.js', 'homebridge-ui/public/index.html', 'config.schema.json']) {
+            assert(files.has(file), `Missing package file: ${file}`);
+          }
+          const archive = path.join(process.env.RUNNER_TEMP, 'npm-package', packed.filename);
+          const sha256 = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+          fs.writeFileSync(`${archive}.sha256`, `${sha256}  ${packed.filename}\n`);
+          console.log(`${pkg.name}@${pkg.version}: ${packed.files.length} files; SHA256 ${sha256}`);
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package-${{ github.sha }}
+          path: ${{ runner.temp }}/npm-package/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: check
+    if: inputs.operation == 'stage' || inputs.operation == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.21.2
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package-${{ github.sha }}
+          path: ${{ runner.temp }}/npm-package
+      - name: Submit the checked archive to npm
+        env:
+          OPERATION: ${{ inputs.operation }}
+          NPM_TAG: ${{ inputs.npm_tag }}
+          NODE_AUTH_TOKEN: ''
+          NPM_TOKEN: ''
+          NPM_AUTH_TOKEN: ''
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-oidc-only.npmrc
+        run: |
+          case "$NPM_TAG" in latest|beta) ;; *) exit 1 ;; esac
+          printf '%s\n' 'registry=https://registry.npmjs.org/' > "$NPM_CONFIG_USERCONFIG"
+          shopt -s nullglob
+          archives=("$RUNNER_TEMP/npm-package/"*.tgz)
+          test "${#archives[@]}" -eq 1
+          cd "$RUNNER_TEMP/npm-package"
+          sha256sum --check "${archives[0]}.sha256"
+          case "$OPERATION" in
+            stage) npm stage publish "${archives[0]}" --ignore-scripts --access public --tag "$NPM_TAG" ;;
+            publish) npm publish "${archives[0]}" --ignore-scripts --access public --tag "$NPM_TAG" ;;
+            *) exit 1 ;;
+          esac

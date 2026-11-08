@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.2-jdipper.2] - (2026.11.08)
+
+### Changed
+- Prepare the fork for public npm releases as `@jdipper/homebridge-tuya`, with its own update source and an explicit package file list.
+- Preserve the existing Heating Home and Holiday accessory identities when changing package name, and use the installed package identity for the editor's private runtime connection.
+- Add a manually triggered npm publishing workflow and setup instructions.
+
 ## [2.7.2-jdipper.1] - (2026.11.08)
 
 ### Changed

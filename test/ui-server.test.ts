@@ -129,6 +129,13 @@ describe('Homebridge custom UI runtime relay', () => {
     expect(output).not.toContain(descriptor.token);
   });
 
+  test('rejects a descriptor belonging to a different plugin package', async () => {
+    await fs.writeFile(descriptorPath, JSON.stringify({ ...descriptor, plugin: '@another/homebridge-tuya' }));
+    expect(await call('/instances')).toEqual({ success: true, data: { instances: [] } });
+    expect((await call('/thermostats', { instanceId: descriptor.instanceId })).success).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   test('rejects a descriptor pointing at a socket outside its expected runtime path', async () => {
     await fs.writeFile(descriptorPath, JSON.stringify({ ...descriptor, socketPath: path.join(directory, 'unrelated.sock') }));
     expect(await call('/instances')).toEqual({ success: true, data: { instances: [] } });

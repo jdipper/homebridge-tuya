@@ -15,3 +15,6 @@ export const PLATFORM_NAME = platformName;
  * This must match the name of your plugin as defined the package.json
  */
 export const PLUGIN_NAME = pluginName;
+
+/** Keep household control UUIDs stable when installing the separately named fork. */
+export const THERMOSTAT_PROFILE_UUID_NAMESPACE = '@homebridge-plugins/homebridge-tuya';

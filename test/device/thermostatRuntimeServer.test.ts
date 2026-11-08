@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { request } from 'http';
 import ThermostatRuntimeServer, { ThermostatRuntimeDescriptor } from '../../src/device/schedule/ThermostatRuntimeServer';
+import { PLUGIN_NAME } from '../../src/settings';
 
 describe('Private thermostat runtime IPC', () => {
   let directory: string;
@@ -40,6 +41,7 @@ describe('Private thermostat runtime IPC', () => {
   });
 
   test('relays authenticated local requests without returning its runtime token', async () => {
+    expect(descriptor.plugin).toBe(PLUGIN_NAME);
     const result = await call(descriptor.token);
     expect(result).toEqual({ status: 200, body: { thermostats: [{ id: 'room', currentTemperature: 19.5 }] } });
     expect(handler).toHaveBeenCalledWith('/thermostats', {});

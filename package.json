@@ -1,13 +1,12 @@
 {
-  "name": "@homebridge-plugins/homebridge-tuya",
+  "name": "@jdipper/homebridge-tuya",
   "displayName": "Homebridge Tuya (jdipper FastWarm)",
-  "version": "2.7.2-jdipper.1",
-  "private": true,
+  "version": "2.7.2-jdipper.2",
   "description": "jdipper's Homebridge Tuya fork with FastWarm room temperatures, household programmes and security fixes.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jdipper/homebridge-tuya"
+    "url": "git+https://github.com/jdipper/homebridge-tuya.git"
   },
   "homepage": "https://github.com/jdipper/homebridge-tuya#readme",
   "bugs": {
@@ -27,6 +26,19 @@
     "homebridge": "^1.8.0 || ^2.0.0"
   },
   "main": "dist/index.js",
+  "files": [
+    "dist/",
+    "homebridge-ui/",
+    "docs/",
+    "config.schema.json",
+    "SUPPORTED_DEVICES.md",
+    "ADVANCED_OPTIONS.md",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "lint": "eslint src/**/*.ts --max-warnings=0",
     "test": "jest",

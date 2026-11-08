@@ -12,7 +12,7 @@ const ROUTES = [
   '/overrides/cancel', '/profiles/history', '/profiles/restore', '/history', '/temperatures/history',
   '/controls/recover',
 ];
-const PLUGIN = '@homebridge-plugins/homebridge-tuya';
+const PLUGIN = require('../package.json').name;
 
 async function discover(storagePath) {
   const persistPath = path.join(storagePath, 'persist');

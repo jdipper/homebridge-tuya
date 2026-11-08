@@ -8,7 +8,7 @@ import TuyaDeviceManager from './device/TuyaDeviceManager';
 import TuyaCustomDeviceManager from './device/TuyaCustomDeviceManager';
 import TuyaHomeDeviceManager from './device/TuyaHomeDeviceManager';
 
-import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
+import { PLATFORM_NAME, PLUGIN_NAME, THERMOSTAT_PROFILE_UUID_NAMESPACE } from './settings';
 import { TuyaPlatformConfig, customOptionsSchema, homeOptionsSchema } from './config';
 import AccessoryFactory from './accessory/AccessoryFactory';
 import BaseAccessory from './accessory/BaseAccessory';
@@ -242,8 +242,8 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       projectType: this.options.projectType, endpoint: this.options.endpoint, accessId: this.options.accessId,
       username: this.options.username, bridge: this.config._bridge?.username ?? this.config.name,
     });
-    const homeUuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:thermostat-profiles:${instanceId}`);
-    const holidayUuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:thermostat-profiles:${instanceId}:holiday`);
+    const homeUuid = this.api.hap.uuid.generate(`${THERMOSTAT_PROFILE_UUID_NAMESPACE}:thermostat-profiles:${instanceId}`);
+    const holidayUuid = this.api.hap.uuid.generate(`${THERMOSTAT_PROFILE_UUID_NAMESPACE}:thermostat-profiles:${instanceId}:holiday`);
     const known = [...this.thermostatProfileControllers, ...this.cachedAccessories];
     const cachedHome = known.find(accessory => accessory.UUID === homeUuid);
     const cachedHoliday = known.find(accessory => accessory.UUID === holidayUuid);

@@ -2,11 +2,12 @@ import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
 import { randomBytes, timingSafeEqual } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { PLUGIN_NAME } from '../../settings';
 
 export interface ThermostatRuntimeDescriptor {
   version: 1;
   instanceId: string;
-  plugin: '@homebridge-plugins/homebridge-tuya';
+  plugin: string;
   socketPath: string;
   token: string;
   pid: number;
@@ -58,7 +59,7 @@ export default class ThermostatRuntimeServer {
       await fs.rm(socketPath, { force: true });
     }
     const descriptor: ThermostatRuntimeDescriptor = {
-      version: 1, instanceId: this.instanceId, plugin: '@homebridge-plugins/homebridge-tuya',
+      version: 1, instanceId: this.instanceId, plugin: PLUGIN_NAME,
       socketPath, token: randomBytes(32).toString('hex'), pid: process.pid,
     };
     const server = createServer((request, response) => {

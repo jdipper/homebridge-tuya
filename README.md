@@ -13,13 +13,15 @@ display fixes also have separate branches for possible upstream pull requests.
 The scheduling features are maintained in this fork. See
 [branches and upstream contributions](#branches-and-upstream-contributions).
 
-The npm package name remains `@homebridge-plugins/homebridge-tuya` to preserve
-existing configuration and accessories. Fork releases use a distinct version,
-starting with **`2.7.2-jdipper.1`**, and display **Homebridge Tuya (jdipper
-FastWarm)**. The package is marked `private` to prevent npm publication and
-Homebridge UI's upstream npm update suggestions. The upstream npm release and
-Homebridge verification status belong to the original project; this fork is not
-a separately verified release.
+This fork's npm package is **`@jdipper/homebridge-tuya`**, starting with version
+**`2.7.2-jdipper.2`**, and displays **Homebridge Tuya (jdipper FastWarm)**.
+It has its own npm update source. The upstream package is
+`@homebridge-plugins/homebridge-tuya`; its Homebridge verification status belongs
+to the original project. This fork is not a separately verified release.
+
+**Initial npm publication is pending.** The npm installation instructions apply
+once the first package has been published. The source build below is available
+in the meantime.
 
 ## Features
 
@@ -113,22 +115,39 @@ See [CHANGELOG.md](./CHANGELOG.md)
 Use a Node.js version supported by your Homebridge installation; the plugin's
 version ranges are listed in [package.json](./package.json). Preserve your
 Homebridge configuration and persist directory when replacing an installation.
-The older `homebridge-tuya-platform` plugin cannot run alongside this package.
+Run one Tuya implementation at a time. The upstream
+`@homebridge-plugins/homebridge-tuya` and older `homebridge-tuya-platform` plugins
+cannot run alongside this package with the same `TuyaPlatform` configuration.
 
-### Install a compiled fork release
+### Install from npm
 
-Download a compiled `.tgz` from this fork's
-[GitHub releases](https://github.com/jdipper/homebridge-tuya/releases). For a
-local npm-managed Homebridge installation, run this from its storage directory:
+After the initial publication, install `@jdipper/homebridge-tuya` through your
+Homebridge plugin manager. For a local npm-managed installation, run this from
+its storage directory:
 
 ```sh
-npm install --save-exact 'https://github.com/jdipper/homebridge-tuya/releases/download/v2.7.2-jdipper.1/homebridge-plugins-homebridge-tuya-2.7.2-jdipper.1.tgz'
+npm install --save-exact @jdipper/homebridge-tuya@2.7.2-jdipper.2
 ```
 
-This records the fork release URL as the package source. Update by installing a
-new compiled fork release explicitly; the package does not use upstream npm
-updates. Restart the Tuya child bridge after installation. Keep the existing
-`TuyaPlatform` configuration.
+Future updates to this package come from the fork's npm releases. Publishing is
+described in the [npm release guide](docs/npm-publishing.md).
+
+### Migrate an existing installation
+
+Back up the Homebridge configuration, persist directory and installed plugin.
+Replace the existing Tuya package with `@jdipper/homebridge-tuya`, ensuring the
+old implementation is removed before restarting Homebridge. Keep the
+`TuyaPlatform` configuration, its name and child bridge username unchanged.
+Restart Homebridge after changing the package name so it discovers the new
+plugin and can reassociate cached accessories.
+
+Thermostat UUIDs and saved programme instance IDs are unchanged. Heating Home
+and Heating Holiday retain the earlier fork's UUID namespace so their existing
+Apple Home identities can be reused. Keep the full backup until room readings,
+saved programmes and household controls have been verified after migration.
+
+The earlier GitHub release `v2.7.2-jdipper.1` used the upstream package name. Its
+archive does not install the new npm package.
 
 ### Build this fork
 
@@ -152,15 +171,15 @@ npm install --save /absolute/path/to/generated-package.tgz
 ```
 
 Restart the Tuya child bridge, or Homebridge if it does not use a child bridge.
-Keep the existing `TuyaPlatform` configuration. The fork uses the same package
-and platform names as upstream, so this replaces the installed implementation.
+Keep the existing `TuyaPlatform` configuration. When replacing the upstream
+package, follow the migration steps above because the npm package name differs.
 
 ### Upstream npm release
 
 Searching Homebridge's plugin catalogue for `@homebridge-plugins/homebridge-tuya`,
 or running `npm install @homebridge-plugins/homebridge-tuya`, installs the upstream
-release. It does not select this fork's `main` branch. Use the built archive to
-keep this fork's additions when updating.
+release. To install this fork, use `@jdipper/homebridge-tuya` or build this
+repository.
 
 
 ## Configuration

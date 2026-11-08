@@ -3,6 +3,10 @@ import ThermostatRuntime from '../src/device/schedule/ThermostatRuntime';
 import { configureThermostatProfileAccessories } from '../src/accessory/ThermostatProfileAccessory';
 import { PLUGIN_NAME } from '../src/settings';
 
+jest.mock('../src/settings', () => ({
+  ...jest.requireActual('../src/settings'), PLUGIN_NAME: '@jdipper/homebridge-tuya',
+}));
+
 jest.mock('../src/device/schedule/ThermostatRuntime', () => ({ __esModule: true,
   default: Object.assign(jest.fn(), { instanceId: jest.fn(() => '0123456789abcdef') }),
 }));
@@ -11,8 +15,9 @@ jest.mock('../src/accessory/ThermostatProfileAccessory', () => ({ __esModule: tr
 }));
 
 const instanceId = '0123456789abcdef';
-const homeUuid = `uuid:${PLUGIN_NAME}:thermostat-profiles:${instanceId}`;
-const holidayUuid = `uuid:${PLUGIN_NAME}:thermostat-profiles:${instanceId}:holiday`;
+// Fixtures retain the identities published by the original installed package.
+const homeUuid = `uuid:@homebridge-plugins/homebridge-tuya:thermostat-profiles:${instanceId}`;
+const holidayUuid = `uuid:@homebridge-plugins/homebridge-tuya:thermostat-profiles:${instanceId}:holiday`;
 function fixture(cached = true) {
   const home = { UUID: homeUuid, displayName: 'Heating Programmes' };
   const holiday = { UUID: holidayUuid, displayName: 'Heating Holiday' };
@@ -64,13 +69,17 @@ test('keeps the legacy Home UUID and creates exactly one stable separate Holiday
   expect(data.api.registerPlatformAccessories.mock.calls.map(call => call[2][0])).toEqual([
     { UUID: homeUuid, displayName: 'Heating Home' }, { UUID: holidayUuid, displayName: 'Heating Holiday' },
   ]);
+  expect(data.api.registerPlatformAccessories.mock.calls.map(call => call.slice(0, 2))).toEqual([
+    ['@jdipper/homebridge-tuya', 'TuyaPlatform'], ['@jdipper/homebridge-tuya', 'TuyaPlatform'],
+  ]);
   expect(data.platform.thermostatRuntime).toBe(data.runtime);
   await data.initialise();
   expect(data.api.registerPlatformAccessories).toHaveBeenCalledTimes(2);
   expect(ThermostatRuntime).toHaveBeenCalledTimes(1);
 });
 
-test('reuses both cached controllers without registering replacements', async () => {
+test('reuses both original cached controllers after changing the npm package identity', async () => {
+  expect(PLUGIN_NAME).toBe('@jdipper/homebridge-tuya');
   const data = fixture(); await data.initialise();
   expect(configureThermostatProfileAccessories).toHaveBeenCalledWith(data.platform, data.runtime, data.home, data.holiday, expect.any(Function));
   expect(data.api.registerPlatformAccessories).not.toHaveBeenCalled();

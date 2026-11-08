@@ -84,6 +84,10 @@ returned to the browser. All other descriptor fields remain server-side. The
 relay accepts only the expected socket path for that instance, canonical IDs
 and tokens, and owner-only discovery files on Unix.
 
+The runtime and relay derive the package identity from their installed
+`package.json`; the relay accepts only an exact match. The npm fork retains the
+same instance IDs, state paths and socket paths across its package rename.
+
 The SDK request handler forwards allowlisted JSON requests with HTTP POST over
 the runtime's local socket, authenticated using its Bearer token. Frontend
 requests may include `instanceId`; it is required when several runtimes are

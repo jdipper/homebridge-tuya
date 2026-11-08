@@ -19,10 +19,6 @@ It has its own npm update source. The upstream package is
 `@homebridge-plugins/homebridge-tuya`; its Homebridge verification status belongs
 to the original project. This fork is not a separately verified release.
 
-**Initial npm publication is pending.** The npm installation instructions apply
-once the first package has been published. The source build below is available
-in the meantime.
-
 ## Features
 
 - Measured room temperature shown separately from the target on supported FastWarm
@@ -121,8 +117,8 @@ cannot run alongside this package with the same `TuyaPlatform` configuration.
 
 ### Install from npm
 
-After the initial publication, install `@jdipper/homebridge-tuya` through your
-Homebridge plugin manager. For a local npm-managed installation, run this from
+Install `@jdipper/homebridge-tuya` through your Homebridge plugin manager.
+For a local npm-managed installation, run this from
 its storage directory:
 
 ```sh

@@ -250,6 +250,48 @@ describe('FastWarm raw temperature support', () => {
     expect(manager.getTemperatureObservation(device.id)).toMatchObject({ value: 190, reportedAt: NOW, source: 'mqtt' });
   });
 
+  test('retains quoted source timestamps rather than treating a late shadow as a new report', async () => {
+    let resolve: (value: ReturnType<typeof shadow>) => void = () => undefined;
+    get.mockReturnValue(new Promise(done => { resolve = done; }));
+    const request = manager.enrichDeviceStatus(device);
+    await manager.onMQTTMessage('test', 4, {
+      devId: device.id, status: [{ dpId: 105, value: 210, t: String(NOW + 1000) }],
+    });
+    resolve(shadow(195, NOW));
+    await request;
+    expect(device.status.find(status => status.code === 'temp_current')?.value).toBe(210);
+    expect(getFastWarmTemperatureReport({ dpId: 105, value: 195, t: String(NOW) })?.time).toBe(NOW);
+  });
+
+  test('ignores far-future room reports without blocking the next valid update', async () => {
+    await manager.enrichDeviceStatus(device);
+    await manager.onMQTTMessage('test', 4, { devId: device.id, status: [{ dpId: 105, value: 230, t: NOW + 3600000 }] });
+    expect(device.status.find(status => status.code === 'temp_current')?.value).toBe(195);
+    await manager.onMQTTMessage('test', 4, { devId: device.id, status: [{ dpId: 105, value: 205, t: NOW + 1000 }] });
+    expect(device.status.find(status => status.code === 'temp_current')?.value).toBe(205);
+  });
+
+  test('keeps only the latest accepted room reading in a batch with duplicate raw report forms', async () => {
+    await manager.enrichDeviceStatus(device);
+    const listener = jest.fn();
+    const observation = jest.fn((room: TuyaDevice) => {
+      expect(room.status.find(item => item.code === 'temp_current')?.value).toBe(210);
+    });
+    manager.on(TuyaDeviceManager.Events.DEVICE_STATUS_UPDATE, listener);
+    manager.on(TuyaDeviceManager.Events.THERMOSTAT_OBSERVATION, observation);
+    await manager.onMQTTMessage('test', 4, { devId: device.id, status: [
+      { dpId: 105, value: 200, t: NOW + 1000 },
+      { code: 'RoomTemper', value: 210, t: NOW + 2000 },
+      { '105': 205, t: NOW + 1500 },
+    ] });
+    expect(device.status.find(status => status.code === 'temp_current')?.value).toBe(210);
+    expect(listener).toHaveBeenCalledWith(device, [{ code: 'temp_current', value: 210 }]);
+    expect(observation).toHaveBeenCalledTimes(1);
+    expect(observation).toHaveBeenCalledWith(device, {
+      value: 210, reportedAt: NOW + 2000, receivedAt: NOW, source: 'mqtt',
+    });
+  });
+
   test.each(['home', 'custom', 'single'])('hydrates before returning a device from %s discovery', async kind => {
     if (kind === 'home') {
       const home = new TuyaHomeDeviceManager(api);

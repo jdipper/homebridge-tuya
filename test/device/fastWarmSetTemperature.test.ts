@@ -71,6 +71,7 @@ describe('FastWarm native target reports', () => {
     expect(listener).toHaveBeenCalledWith(device, [{ code: 'temp_set', value: 230, t: NOW + 1000 }]);
     expect(manager.getTemperatureObservation(device.id)).toEqual(observation);
     expect(measurement).not.toHaveBeenCalled();
+    expect(device.status.find(item => item.code === 'temp_current')?.value).toBe(195);
     expect(get).toHaveBeenCalledTimes(1);
   });
 
@@ -86,6 +87,7 @@ describe('FastWarm native target reports', () => {
     await manager.onMQTTMessage('test', 4, { devId: device.id, status: [{ code: 'temp_set', value: 200, t: NOW + 1000 }] });
     expect(target()).toBe(230);
     expect(manager.getTemperatureObservation(device.id)?.value).toBe(200);
+    expect(device.status.find(item => item.code === 'temp_current')?.value).toBe(200);
   });
 
   test('does not let stale or invalid canonical-coded native reports bypass ordering and validation', async () => {

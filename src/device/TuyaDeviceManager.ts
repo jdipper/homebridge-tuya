@@ -677,11 +677,15 @@ export default class TuyaDeviceManager extends EventEmitter {
           const reports = status.map(getFastWarmTemperatureReport).filter(report => report !== undefined);
           // Remove raw entries, including malformed/stale reports, before updating the standard status cache.
           status = status.filter(item => !isFastWarmTemperatureReport(item));
+          let latestTemperature: TuyaDeviceStatus | undefined;
           for (const report of reports) {
             const temperature = this.applySupplementalTemperature(device, report, 'mqtt');
             if (temperature) {
-              status = [...status, temperature];
+              latestTemperature = temperature;
             }
+          }
+          if (latestTemperature) {
+            status = [...status, latestTemperature];
           }
         }
 

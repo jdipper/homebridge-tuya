@@ -254,6 +254,117 @@ describe('thermostat runtime explicit manual operations', () => {
 });
 
 describe('presence and Holiday programme application', () => {
+  test('Home and Holiday selections are exclusive without erasing remembered occupancy', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    await runtime.handle('/home', { home: true });
+    await idle(runtime);
+    expect(runtime.homeActive).toBe(true);
+    const returnAt = Date.now() + 3600000;
+    await runtime.handle('/holiday', { active: true, returnAt, preheatMinutes: 10 });
+    await idle(runtime);
+    expect(runtime.homeActive).toBe(false);
+    expect(runtime.holidayActive).toBe(true);
+    expect(runtime.householdPresence).toBe(true);
+    await runtime.handle('/home', { home: true });
+    await idle(runtime);
+    expect(runtime.homeActive).toBe(true);
+    expect(runtime.view().holiday).toMatchObject({ active: false, returnAt: null, preheating: false });
+    expect(room(runtime).sync.confirmedProfile).toBe('home');
+    expect(transport.apply.mock.calls.map(call => call[1].draft.days[0].events[0].temperature)).toEqual([20, 10, 20]);
+  });
+
+  test('Home off during Holiday remembers absence without cancelling Holiday', async () => {
+    const { runtime } = await fixture();
+    await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
+    await runtime.handle('/home', { home: true });
+    await idle(runtime);
+    await runtime.handle('/holiday', { active: true });
+    await idle(runtime);
+    await runtime.handle('/home', { home: false });
+    await idle(runtime);
+    expect(runtime.homeActive).toBe(false);
+    expect(runtime.holidayActive).toBe(true);
+    expect(runtime.householdPresence).toBe(false);
+    await runtime.handle('/holiday', { active: false });
+    await idle(runtime);
+    expect(room(runtime).sync.confirmedProfile).toBe('away');
+  });
+
+  test('a household request reads its own fresh baseline without an editor read', async () => {
+    const { runtime, transport } = await fixture();
+    await save(runtime, 'home', 20);
+    await save(runtime, 'away', 16);
+    await save(runtime, 'holiday', 12, true);
+    expect(transport.read).not.toHaveBeenCalled();
+    await runtime.handle('/presence', { home: true });
+    await idle(runtime);
+    expect(transport.native.get('room-a')).toEqual(programme(20));
+    expect(room(runtime).sync.confirmationMatchesRequested).toBe(true);
+  });
+
+  test('a new Holiday request replaces the current programme using a fresh baseline', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    await runtime.handle('/presence', { home: true });
+    await idle(runtime);
+    const changed = programme(20);
+    changed.days[0].events[1].temperature = 21;
+    transport.native.set('room-a', changed);
+    await runtime.handle('/holiday', { active: true });
+    await idle(runtime);
+    expect(transport.native.get('room-a')).toEqual(programme(10));
+    expect(room(runtime).sync.confirmedProfile).toBe('holiday');
+    expect(room(runtime).sync.confirmationMatchesRequested).toBe(true);
+  });
+
+  test('an incomplete fresh baseline blocks writes even when a cached programme exists', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    transport.read.mockImplementationOnce(async id => ({ ...transport.snapshot(id), fingerprint: null,
+      timedOut: true, errors: ['Incomplete baseline'] }));
+    await runtime.handle('/holiday', { active: true });
+    await idle(runtime);
+    expect(room(runtime).sync.status).toBe('failed');
+    expect(transport.apply).not.toHaveBeenCalled();
+    expect(transport.activateProgramme).not.toHaveBeenCalled();
+    await runtime.handle('/holiday', { active: true });
+    await idle(runtime);
+    expect(transport.apply).not.toHaveBeenCalled();
+  });
+
+  test.each([true, false])('Holiday off restores the latest programme after an unfinished failed upload (home=%s)', async home => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
+    await runtime.handle('/presence', { home });
+    await idle(runtime);
+    await save(runtime, 'holiday', 12);
+    const gate = deferred<void>(), started = deferred<void>();
+    transport.apply.mockImplementationOnce(async id => {
+      const backup = transport.snapshot(id);
+      started.resolve();
+      await gate.promise;
+      const mixed = programme(12);
+      mixed.days[0].events[1].temperature = 20;
+      transport.native.set(id, mixed);
+      return { status: 'unverified', backup, readback: { ...transport.snapshot(id), fingerprint: null,
+        timedOut: true, errors: ['Incomplete readback'] }, planned: 28, applied: 28,
+      unknownOutcome: true, error: 'Holiday programme did not match.' };
+    });
+    await runtime.handle('/holiday', { active: true });
+    await started.promise;
+    await runtime.handle('/holiday', { active: false });
+    expect(room(runtime).sync.queuedProfile).toBe(home ? 'home' : 'away');
+    gate.resolve();
+    await idle(runtime);
+    expect(transport.apply).toHaveBeenCalledTimes(3);
+    expect(transport.native.get('room-a')).toEqual(programme(home ? 20 : 16));
+    expect(room(runtime).sync).toMatchObject({ confirmedProfile: home ? 'home' : 'away',
+      queuedProfile: null, confirmationMatchesRequested: true });
+  });
+
   test('automatic selection requires all three programmes and explicit device enrollment', async () => {
     const { runtime, transport } = await fixture();
     await expect(save(runtime, 'home', 20, true)).rejects.toThrow('Home, Away and Holiday');
@@ -323,7 +434,7 @@ describe('presence and Holiday programme application', () => {
     expect(room(runtime).sync.confirmedProfile).toBe('away');
   });
 
-  test('partial failure clears queued intent and does not retry automatically', async () => {
+  test('partial failure remains visible and does not retry the failed selection automatically', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
     await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
@@ -342,14 +453,15 @@ describe('presence and Holiday programme application', () => {
     await runtime.handle('/presence', { home: true });
     await started.promise;
     await runtime.handle('/presence', { home: false });
+    await runtime.handle('/presence', { home: true });
     gate.resolve();
     await idle(runtime);
     expect(room(runtime).sync.status).toBe('partial');
-    expect(room(runtime).sync.requestedProfile).toBe('away');
+    expect(room(runtime).sync.requestedProfile).toBe('home');
     expect(room(runtime).sync.confirmedProfile).toBeNull();
     expect(transport.apply).toHaveBeenCalledTimes(1);
     expect(transport.activateProgramme).not.toHaveBeenCalled();
-    await runtime.handle('/presence', { home: false });
+    await runtime.handle('/presence', { home: true });
     await idle(runtime);
     expect(transport.apply).toHaveBeenCalledTimes(1);
   });
@@ -531,6 +643,29 @@ describe('bridge-owned controls and timers', () => {
 });
 
 describe('programme confirmation feedback', () => {
+  test.each(['different period', 'incomplete read'])('post-activation %s prevents a false programme confirmation', async failure => {
+    const { runtime, transport, mode } = await fixture();
+    await configure(runtime, true);
+    await save(runtime, 'holiday', 12);
+    transport.activateProgramme.mockImplementationOnce(async id => {
+      mode.set(id, 'smart');
+      if (failure === 'different period') {
+        const mixed = programme(12);
+        mixed.days[0].events[1].temperature = 20;
+        transport.native.set(id, mixed);
+      } else {
+        transport.read.mockImplementationOnce(async deviceId => ({ ...transport.snapshot(deviceId),
+          fingerprint: null, timedOut: true, errors: ['Incomplete readback'] }));
+      }
+    });
+    await runtime.handle('/holiday', { active: true });
+    await idle(runtime);
+    expect(room(runtime).sync).toMatchObject({ status: 'partial', requestedProfile: 'holiday',
+      confirmedProfile: null, confirmationMatchesRequested: false });
+    expect(room(runtime).sync.error).toContain('after Scheduled mode');
+    expect(transport.apply).toHaveBeenCalledTimes(1);
+  });
+
   test('a complete native read alone does not claim that a saved profile was applied', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);

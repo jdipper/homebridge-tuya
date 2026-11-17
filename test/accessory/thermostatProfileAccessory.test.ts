@@ -55,6 +55,7 @@ function fixture(mode: 'new' | 'split' | 'legacy' = 'new', configuredNames: Reco
     state: { anyoneHome: null as boolean | null, holiday: false }, handle: jest.fn(async () => ({})) });
   Object.defineProperties(runtime, {
     householdPresence: { get: () => runtime.state.anyoneHome }, holidayActive: { get: () => runtime.state.holiday },
+    homeActive: { get: () => runtime.state.holiday ? false : runtime.state.anyoneHome },
   });
   class Unavailable extends Error {}
   const platform = { api: { updatePlatformAccessories: jest.fn(), hap: {
@@ -81,10 +82,10 @@ describe('Apple Home thermostat programme controls', () => {
     expect(() => presence.get!()).toThrow(Unavailable);
     expect(holidayControl.get!()).toBe(false);
   });
-  test('routes first-arrival/last-departure switches to household presence', async () => {
+  test('routes Home selection through the exclusive mode control', async () => {
     const { presence, runtime } = controls();
-    await presence.set!(true); expect(runtime.handle).toHaveBeenLastCalledWith('/presence', { home: true });
-    await presence.set!(false); expect(runtime.handle).toHaveBeenLastCalledWith('/presence', { home: false });
+    await presence.set!(true); expect(runtime.handle).toHaveBeenLastCalledWith('/home', { home: true });
+    await presence.set!(false); expect(runtime.handle).toHaveBeenLastCalledWith('/home', { home: false });
   });
   test('routes Holiday on and off through the runtime override', async () => {
     const { holidayControl, runtime } = controls();
@@ -94,8 +95,20 @@ describe('Apple Home thermostat programme controls', () => {
   test('publishes selection changes from the web editor back to Apple Home', () => {
     const { presence, holidayControl, runtime } = controls();
     runtime.state.anyoneHome = true; runtime.state.holiday = true; runtime.emit('change');
-    expect(presence.updateValue).toHaveBeenLastCalledWith(true);
+    expect(presence.updateValue).toHaveBeenLastCalledWith(false);
     expect(holidayControl.updateValue).toHaveBeenLastCalledWith(true);
+    expect(presence.get!()).toBe(false);
+    expect(runtime.state.anyoneHome).toBe(true);
+    runtime.state.holiday = false; runtime.emit('change');
+    expect(presence.updateValue).toHaveBeenLastCalledWith(true);
+    expect(holidayControl.updateValue).toHaveBeenLastCalledWith(false);
+  });
+  test('Holiday shows Home off even before occupancy is known', () => {
+    const { presence, holidayControl, runtime } = controls();
+    runtime.state.holiday = true; runtime.emit('change');
+    expect(presence.get!()).toBe(false);
+    expect(holidayControl.get!()).toBe(true);
+    expect(presence.updateValue).toHaveBeenLastCalledWith(false);
   });
   test('creates separate Home and Holiday switches without changing household state', () => {
     const { home, holiday, runtime } = controls();

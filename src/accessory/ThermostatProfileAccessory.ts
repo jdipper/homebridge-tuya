@@ -38,19 +38,19 @@ export default class ThermostatProfileAccessory {
     }
     service.getCharacteristic(Characteristic.On)
       .onGet(() => {
-        if (role === 'home' && runtime.householdPresence === null) {
+        if (role === 'home' && runtime.homeActive === null) {
           const { HapStatusError, HAPStatus } = platform.api.hap;
           throw new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
         }
-        return role === 'home' ? runtime.householdPresence! : runtime.holidayActive;
+        return role === 'home' ? runtime.homeActive! : runtime.holidayActive;
       })
       .onSet(async value => {
-        await runtime.handle(role === 'home' ? '/presence' : '/holiday', role === 'home'
+        await runtime.handle(role === 'home' ? '/home' : '/holiday', role === 'home'
           ? { home: Boolean(value) } : { active: Boolean(value) });
       });
     this.update = () => {
-      if (role === 'holiday' || runtime.householdPresence !== null) {
-        service.getCharacteristic(Characteristic.On).updateValue(role === 'home' ? runtime.householdPresence! : runtime.holidayActive);
+      if (role === 'holiday' || runtime.homeActive !== null) {
+        service.getCharacteristic(Characteristic.On).updateValue(role === 'home' ? runtime.homeActive! : runtime.holidayActive);
       }
     };
     runtime.on('change', this.update);

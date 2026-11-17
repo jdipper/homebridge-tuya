@@ -11,7 +11,7 @@ the shared owner.
 | Component | Source | Last verified installed build, 17 November |
 | --- | --- | --- |
 | Heating Programmes | `jdipper/homebridge-heating-programmes`, `main` | `0.1.0-jdipper.8` |
-| Tuya device provider | `jdipper/homebridge-tuya`, `main` | `2.7.3-jdipper.7` |
+| Tuya device provider | `jdipper/homebridge-tuya`, `fix/fastwarm-programme-delivery` ([draft PR #3](https://github.com/jdipper/homebridge-tuya/pull/3)) | `2.7.3-jdipper.8` |
 | Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (unchanged) |
 
 The paired updates were merged before installation:
@@ -41,34 +41,42 @@ The original Holiday work remains available in
 `ec4d73eeb54f646fec117124aa60976ddc02c82c`. That is an older combined-plugin
 implementation and a reference for the fixes, not the deployment baseline.
 
-The paired builds were installed from checked local package archives and passed
-read-only verification at **17 November 2026, 13:43:22 UTC**. They have not been
-published to npm. Settings, saved profiles, history and pairing data were backed
-up before installation. Only the Tuya and Heating Programmes child bridges were
-restarted; the Hive bridge was preserved.
+The earlier shared-Holiday port installed Heating Programmes `.8` and Tuya `.7`
+from checked local archives. Settings, saved profiles, history and pairing data
+were backed up and preserved. The programme-delivery follow-up below supersedes
+that Tuya build; Heating Programmes and Hive remain unchanged. These local builds
+have not been published to npm.
 
-Verification confirmed the running versions, preserved configuration and policy,
-historical native weeks and profiles, grouped control identity/names and provider
-pairings. Heating write counters were unchanged. The installer and verifier sent
-no thermostat writes and initiated no vendor probes; normal provider startup
-traffic is separate from those checks. Four pre-existing programme warnings were
-retained. Six FastWarm current-week snapshots await a fresh read after restart;
-immutable historical versions remain preserved. No live programme-switch test,
-network-isolation test or timer test was performed for this deployment.
-
-## Programme delivery follow-up (candidate)
+## Programme delivery follow-up (installed; hardware validation pending)
 
 Tuya `2.7.3-jdipper.8` on `fix/fastwarm-programme-delivery` adds per-device spacing
 between consecutive native programme packets after an observed middle-period
-write was acknowledged but absent from complete readbacks. The earlier
-installation table remains the deployed baseline until the new build is installed
-and verified. Shared and Hive do not need code changes for this follow-up.
-See [delivery behaviour and validation limits](fastwarm-programme-delivery.md) for
-the regression, timing policy and controlled hardware validation plan. This
-candidate passes **539 offline tests in 34 suites**, including the local socket
-integration tests and 12 new pacing tests. The previous implementation fails the
-new core regression. Build, standard lint and explicit schedule-manager lint pass.
-Hardware validation and installation are still pending.
+write was acknowledged but absent from complete readbacks. It is installed and
+passed static verification. Only the Tuya child bridge was restarted; the shared
+controller and Hive processes, grouped controls, pairing identities,
+configuration, saved profiles and historical programme versions were preserved.
+Fresh read-only checks established complete 28-period weeks for all six FastWarm
+thermostats with zero programme warnings. Those reads confirm stored programmes;
+they do not exercise the new multi-packet delivery interval.
+
+The installed archive was built from
+`bf14951529230c0cf84661fe91b8c209a5ab420a`. It remains immutable. Subsequent edits
+to these handover documents do not replace that archive or change its runtime
+code or dependencies. [PR #3](https://github.com/jdipper/homebridge-tuya/pull/3)
+remains a draft until controlled hardware validation is complete.
+
+See [delivery behaviour and validation limits](fastwarm-programme-delivery.md)
+for the regression, timing policy and guarded hardware test. The build passes
+**539 offline tests in 34 suites**, including local socket integration tests and
+12 pacing tests. The previous implementation fails the new core regression.
+Build, standard lint and explicit schedule-manager lint pass. The static
+installer/verifier passes **39 tests**; the guarded hardware-test helper passes
+**15 offline tests**.
+
+The future-period hardware test has not run. Its preflight stopped because the
+physical thermostat clock and weekday had not been confirmed. That confirmation
+is pending; no test programme writes were sent. A new test plan must keep its
+future-only condition and verified restoration safeguards.
 
 ## Existing architecture and ownership
 
@@ -131,17 +139,17 @@ has been created by this work.
 
 ## Cancellation contract and API budget
 
-The Tuya `.7` provider advertises `automaticCancellation: true`. Its authenticated
-`/provider/cancel-automatic` route accepts only an owned automatic preview token
-and does not wait behind that preview's applying queue. The callback reaches the
+The Tuya `.7` and `.8` providers advertise `automaticCancellation: true`. The
+authenticated `/provider/cancel-automatic` route accepts only an owned automatic
+preview token and does not wait behind that preview's applying queue. The callback reaches the
 native packet guards and existing post-authentication HTTP dispatch guard.
 Cancellation is local IPC, not another Tuya cloud connection or command.
 
 Shared `.8` remains compatible with the earlier `.6` device provider by allowing
 the already submitted apply operation to finish before preparing the latest
 selection. That provider does not advertise or promise per-command cancellation.
-Use the paired `.7` provider to obtain that stronger behaviour. Hive's single
-whole-week command is allowed to finish once submitted; an obsolete unsent
+Use the paired `.7` or later provider to obtain that stronger behaviour. Hive's
+single whole-week command is allowed to finish once submitted; an obsolete unsent
 preview is consumed/discarded locally without another cloud read or upload.
 
 Preserve the validated optimisations: queue-owned one-shot fresh baselines,
@@ -207,14 +215,17 @@ been added and no automatic cloud fallback is introduced.
 
 - Shared: `npm test` builds the plugin and passes all **268** offline tests,
   including the Unix-socket transport, editor relay and owner-lock suites.
-- Tuya: `npm run lint` and `npm run build` pass. The command below passes **527**
-  tests in **33** suites. Only the two real-account suites are excluded; local
+- Tuya: `npm run lint` and `npm run build` pass. The command below passes **539**
+  tests in **34** suites. Only the two real-account suites are excluded; local
   socket integration suites are included and pass.
 
   ```sh
   npm test -- --runInBand --watchman=false --testPathIgnorePatterns test/home.test.ts test/custom.test.ts
   ```
 
+- The static installer/verifier passes **39 tests** and the guarded hardware-test
+  helper passes **15 offline tests**. These helper tests do not establish a live
+  timing guarantee.
 - Regression coverage includes both providers, failed Holiday then newer Home,
   unknown occupancy, Home/Away/Home cancellation, cancellation arriving before
   apply, interrupted restart restoration, stale/manual confirmation, grouped
@@ -239,7 +250,9 @@ pre-upgrade `HeatingProgrammes.json` backup because `.7` requires those fields.
 No rollback should invent a countdown, replay an interrupted upload or overwrite
 a newer programme without review.
 
-Read-only startup and both providers/controls were verified for this installation.
-Any live programme-switch test still needs fresh baseline evidence and a specific
-controlled plan. Do not infer hardware correctness from the offline suite or an
-HTTP acknowledgement. Unknown writes require review; no automatic replay.
+Read-only startup and both providers/controls were verified for this installation;
+complete native weeks were then checked without programme writes. A live
+multi-packet delivery test still needs confirmed physical clocks/weekdays, fresh
+baseline evidence and a specific controlled plan. Do not infer hardware
+correctness from the offline suite or an HTTP acknowledgement. Unknown writes
+require review; no automatic replay.

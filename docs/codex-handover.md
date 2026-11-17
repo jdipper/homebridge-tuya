@@ -1,115 +1,214 @@
-# Codex handover: FastWarm heating plugins
+# Codex handover: shared Heating Programmes
 
 Updated: 17 November 2026.
 
-## Starting point
+## Repositories, checkpoints and deployment state
 
-Repository: https://github.com/jdipper/homebridge-tuya
-Branch: `fix/holiday-programme-transitions`
-Draft PR: https://github.com/jdipper/homebridge-tuya/pull/1
-Code checkpoint before this handover: `6d1b866b7955331be5f22801e8cd40c343dfd8c3`.
+Household heating is already split into device providers and a shared scheduler.
+Do not repeat the old combined-plugin extraction or install its runtime beside
+the shared owner.
 
-Start from this branch, not main: it contains fixes that must be retained. The current npm package is `@jdipper/homebridge-tuya`, version `2.7.2-jdipper.2`. The fixes are not published or installed on the user's Homebridge, and no live thermostat commands were issued during this work.
+| Component | Source | Prepared build | Last verified installed build, 12 November |
+| --- | --- | --- | --- |
+| Heating Programmes | `jdipper/homebridge-heating-programmes`, `fix/shared-holiday-transitions` | `0.1.0-jdipper.8` | `0.1.0-jdipper.7` |
+| Tuya device provider | `jdipper/homebridge-tuya`, `fix/shared-holiday-transitions` | `2.7.3-jdipper.7` | `2.7.3-jdipper.6` |
+| Hive device provider | `@jdipper/homebridge-hivehome-control` | unchanged | `1.1.0-jdipper.4` |
 
-## User's objective and architecture
+Implementation checkpoints before this handover:
+- Shared: `f8dab72c2a9afc18073701c6414a29e4b3f4ee39`.
+- Tuya: `aeb9ed78e9a3f4cf2bb9667af4ec98b26dfe713e`.
 
-The user wants two separate Homebridge plugins:
+The public Shared repository has a clean history: the previously verified `.7`
+source snapshot on `main`, followed by this port on its feature branch. Private
+workspace history, runtime files and installation receipts are not published.
+Public commit authors use the GitHub handle and noreply address.
 
-1. A thermostat interface plugin that owns device connections, credentials, readings, device capabilities/limits, native programme encoding, serialized writes and verified readbacks. It exposes individual thermostat accessories in Apple Home.
-2. A scheduling/profile plugin that owns saved Home/Away/Holiday programmes, the editor, household selection, return/preheat settings and application progress. It exposes Heating Home and Heating Holiday.
+In the existing workspace, the publishable Git checkouts are
+`public-repositories/homebridge-heating-programmes` and
+`public-repositories/homebridge-tuya`. The older local repositories retain private
+history for reference only; do not push all their branches or their old history.
 
-Only the thermostat interface plugin should open device connections. Manual thermostat controls and programme updates must use its shared per-device queue.
+The original Holiday work remains available in
+[Tuya draft PR #1](https://github.com/jdipper/homebridge-tuya/pull/1), branch
+`fix/holiday-programme-transitions`, checkpoint
+`ec4d73eeb54f646fec117124aa60976ddc02c82c`. That is an older combined-plugin
+implementation and a reference for the fixes, not the deployment baseline.
 
-Connect the plugins through a small, versioned local API with operations for device discovery/capabilities, reading state, reading programmes, applying programmes, operation progress and cancellation. The existing authenticated private socket implementation is a useful starting point, but currently belongs to the combined scheduling runtime and its UI. Cross-plugin communication must also work when the plugins run in separate child bridge processes.
+This port has not been published to npm or installed on Homebridge. No live
+thermostat commands, schedule reads, network isolation or timer tests were issued
+for this port. The installed-build column records the last verified installation;
+it is not a fresh observation of today's live system.
 
-The scheduler supplies a complete normalized weekly programme. The interface plugin translates it into native commands and reports verified, partial or failed results. Keep Tuya datapoints and local credentials out of scheduler logic.
+## Existing architecture and ownership
 
-For FastWarm, retain native weekly programmes: the scheduler selects/uploads a profile; the thermostat handles the daily periods. WAN outage execution still requires a live test.
+- Tuya owns authentication, device connections, measured temperatures, room
+  discovery, native programme encoding, device queues and verified readbacks.
+- Hive retains its own authentication, device accessories and guarded whole-week
+  schedule operations. Its provider version does not change for this port.
+- Heating Programmes owns the shared editor, saved Home/Away/Holiday drafts,
+  enrollment, household intent, guest hold, Holiday return/preheat, history and
+  progress for both systems.
+- Providers and scheduler communicate over authenticated, versioned private Unix
+  sockets. Separate child bridges are supported. Sockets live in the owner-only
+  `heating-runtime` directory beside `persist`; JSON descriptors remain in
+  `persist`. Vendor credentials never pass to the editor or scheduler.
+- The persisted scheduler file is `persist/HeatingProgrammes.json`. Legacy Tuya
+  profile files are read only for the existing one-time migration, not re-imported
+  to replace newer shared settings.
 
-Suggested first implementation milestone: extract the device/provider boundary from the existing cloud implementation, preserving behaviour and tests. Then introduce a local provider and extract the scheduling plugin. Do not claim local compatibility without a device test.
+The paired candidate builds preserve one **Heating** accessory, UUID seed
+`@jdipper/homebridge-heating-programmes:controls`, with ordinary Switch services
+using stable `home` and `holiday` subtypes. Configured names are Heating Home and
+Heating Holiday; custom names and the grouped accessory identity are retained.
+Do not restore the older two-accessory migration from the reference PR.
 
-## Behaviour already implemented on this branch
+## Ported household behaviour
 
-- Holiday on shows Home off while retaining separately remembered occupancy.
-- Home on atomically ends Holiday, clears its return/preheat deadline, and selects Home. An arrival automation operating Home on has the same effect.
-- Holiday off restores Home/Away using the latest remembered occupancy. Unknown occupancy is not assumed to mean Away.
-- Home off during Holiday remembers absence without cancelling Holiday.
-- No departure grace period remains in Homebridge. The setting, UI and settings route were removed, and old saved countdown fields are discarded.
-- A new automatic selection obtains a fresh programme baseline rather than depending on an old editor read.
-- The apply path retains its fresh backup/conflict check. Manual previews remain bound to their reviewed programme/baseline.
-- Confirmation requires all 28 periods to match after Scheduled mode activation, with mode and seven-day grouping confirmed.
-- Later, different selections survive earlier upload failures; the failed identical request is not automatically replayed.
-- New automatic intent stops obsolete event writes at command boundaries and skips obsolete mode activation. A submitted command must finish; writes never overlap. The latest programme is then applied from a fresh baseline.
-- Startup/reconnect must not blindly replay interrupted or failed writes.
-- New temporary boost/setback activation remains disabled because the original Hold implementation failed hardware validation. Do not silently re-enable it during the refactor.
+- Holiday on shows Home off while remembering actual household occupancy.
+- The grouped Home switch uses `/home`: Home on atomically ends Holiday, clears
+  its return/preheat settings and selects Home. First-arrival automations using
+  that switch have the same effect.
+- `/presence` remains an occupancy-only route. The editor's Someone home and
+  Everyone away buttons remember occupancy without cancelling Holiday.
+- Home off during Holiday remembers absence without ending Holiday.
+- Holiday off restores the latest remembered Home/Away choice. Unknown occupancy
+  is not assumed to mean Away; an active guest hold can supply effective Home.
+- Home/Away selections are immediate. The Away-delay setting, UI and settings
+  route are removed. Old countdown fields are discarded without a startup upload.
+- Guest hold and Holiday return/preheat remain separate deadline features. An
+  overdue deadline after restart requires explicit recovery.
+- A new automatic request prepares its own fresh Scheduled baseline. Manual
+  previews retain their reviewed baseline and expiry/conflict checks.
+- Later different requests survive earlier failed uploads. Failed identical
+  requests and genuinely unknown outcomes are never automatically replayed or
+  reported confirmed merely because a diagnostic read happens to match.
+- A newer selection aborts obsolete automatic work. The provider finishes any
+  submitted command, stops unsent commands, then releases the same device queue
+  before the latest request prepares a fresh baseline. Writes do not overlap.
+- Authenticated proof of a known supersession can permit a fresh latest request
+  even after a Home/Away/Home round trip. A cancellation flag alone cannot turn
+  an unknown native write into a safe identical retry.
+- Obsolete success cannot confirm a newer request. Explicit selection after
+  restart can restore a newer profile blocked behind a different interrupted
+  request; startup and timer refreshes do not replay that request themselves.
 
-The user will handle any departure delay in an Apple Home automation/shortcut. Returning must invalidate that external delayed action before selecting Home; selecting Home alone cannot cancel a sleeping shortcut that later sends Home off. A pending-departure helper was proposed, with a restartable timer or per-run identifier for overlapping departures. No external helper or shortcut has been created.
+An external delayed departure remains the automation's responsibility. Arrival
+must invalidate the pending departure before selecting Home. Selecting Home
+cannot cancel a sleeping shortcut that later sends Home off. Overlapping runs
+need a restartable helper or per-run identifier. No external helper or shortcut
+has been created by this work.
 
-## Existing code to inspect
+## Cancellation contract and API budget
 
-- `src/platform.ts`: runtime startup and accessory publication.
-- `src/accessory/ThermostatProfileAccessory.ts`: Home/Holiday controls and legacy accessory migration.
-- `src/device/schedule/ThermostatRuntime.ts`: currently combines household policy, jobs, persistence, history, Tuya access and UI API.
-- `src/device/schedule/ThermostatProfiles.ts`: profile validation and state transitions.
-- `src/device/schedule/ThermostatControlPolicy.ts`: occupancy, guest hold and Holiday deadlines.
-- `src/device/schedule/FastWarmSchedule.ts`: native programme codec/collector.
-- `src/device/schedule/FastWarmScheduleManager.ts`: cloud programme transport, write serialization, fresh reads and verification.
-- `src/device/schedule/ThermostatRuntimeServer.ts`: authenticated private IPC.
-- `homebridge-ui/`: current combined editor and relay.
-- `test/device/thermostatRuntime.test.ts`, `test/device/fastWarmScheduleManager.test.ts`, `test/accessory/thermostatProfileAccessory.test.ts`: important regression scenarios.
+The Tuya `.7` provider advertises `automaticCancellation: true`. Its authenticated
+`/provider/cancel-automatic` route accepts only an owned automatic preview token
+and does not wait behind that preview's applying queue. The callback reaches the
+native packet guards and existing post-authentication HTTP dispatch guard.
+Cancellation is local IPC, not another Tuya cloud connection or command.
 
-Read `docs/fastwarm-profiles.md`, `docs/fastwarm-roadmap.md`, `docs/fastwarm-boost-investigation.md` and `homebridge-ui/README.md` for further evidence. Some investigation notes are historical; distinguish them from current implemented behaviour.
+Shared `.8` remains compatible with the earlier `.6` device provider by allowing
+the already submitted apply operation to finish before preparing the latest
+selection. That provider does not advertise or promise per-command cancellation.
+Use the paired `.7` candidate to obtain that stronger behaviour. Hive's single
+whole-week command is allowed to finish once submitted; an obsolete unsent
+preview is consumed/discarded locally without another cloud read or upload.
 
-## Hardware and local-control evidence
+Preserve the validated optimisations: queue-owned one-shot fresh baselines,
+grouped native inquiries and writes, memory-only capability caching, fresh group
+membership/availability/mode checks and complete per-room readbacks. Do not add a
+second controller baseline read or fall back to individual commands after an
+uncertain group result.
 
-The user's thermostats are FastWarm ET-63 / Smart WiFi 2.0, product ID `lmtejj3f4kafi2k1`. Existing pilot documentation refers to six rooms.
+For six changed FastWarm rooms, grouped inquiries and one packet per room, the
+expected Home path requires 23 Tuya HTTP attempts cold or 22 warm. One identical
+Away packet shared by all six is expected to require 19 cold or 18 warm. These
+are projected normal paths backed by offline request-count regressions. The
+no-change check was measured live at nine cold and eight warm. Authentication,
+retries and unrelated polling are extra; none of these counts is a guarantee of
+Tuya billing. Retain the distinction when estimating a monthly request budget.
 
-| Native DP | Meaning |
-| --- | --- |
-| 101 | Power |
-| 102 | Target temperature, Celsius tenths |
-| 103 | Control mode: smart / holiday / hold |
-| 105 | Measured room temperature, Celsius tenths |
-| 106 | Floor temperature |
-| 110 | Programme grouping/adaptive flags; preserve unrelated bits |
-| 119 | Raw weekly heating programme |
-| 122 | Programme inquiry |
+Guarded Hive changes retain three cloud reads and one schedule upload; an already
+matching week uses two reads and no upload. Hive traffic is separate from Tuya.
 
-Each week has seven days and four events per day (Wake/Leave/Return/Sleep). Our codec handles six-byte single-event updates and 21-byte full-day reports. A complete-day report format is not proof that a full-day write is supported.
+## Relevant code
 
-Primary local-control evidence:
-- https://github.com/make-all/tuya-local/issues/4935 reports local DPS and basic controls for the exact same product ID. The maintainer says basic functionality is covered by the Jiahong ET61+ definition. This does not establish complete local programme read/write support.
-- https://github.com/jasonacox/tinytuya documents discovery and the required device ID, IP, protocol version and local key. Local keys can be retrieved during setup via Tuya cloud and change on re-pairing.
-- https://github.com/codetheweb/tuyapi is the proposed Node.js local transport library. Its releases document protocol 3.5 support. It has not yet been added to this project.
+In `homebridge-heating-programmes`:
+- `src/controller/Controller.ts`, `ControlPolicy.ts`: shared policy, state queue,
+  latest-intent handling, failed-request identity and lifecycle.
+- `src/platform.ts`: stable grouped controls and `/home` handler binding.
+- `src/tuya/TuyaIpcTransport.ts`: guarded preview ownership and local cancellation.
+- `src/hive/`: single-week guarded upload, cancellation before submission and
+  unchanged native Holiday/demand preconditions.
+- `homebridge-ui/`: editor relay, immediate-selection help and script cache hash.
 
-First live milestone should be one thermostat: read local state, request/collect the entire programme, back it up, make one controlled event change and restore it, then test a full profile and WAN-independent execution. Local connection and programme compatibility have not yet been tested on the user's hardware.
+In `homebridge-tuya`:
+- `src/device/schedule/TuyaProgrammeProvider.ts`,
+  `TuyaProgrammeProviderServer.ts`: owned automatic leases and cancellation IPC.
+- `src/device/schedule/FastWarmScheduleManager.ts`: native command boundaries,
+  fresh baselines and full-week verification.
+- Existing `FastWarmGroupCommandBroker.ts` and `TuyaOpenAPI.ts` dispatch guards
+  remain the foundation for grouping and authenticated request safety.
 
-Many Tuya devices allow one local client at a time. Keep connection ownership in the thermostat plugin. Keep keys private and out of logs, browser data and committed configuration. Do not add automatic cloud fallback that could duplicate or replay an uncertain write.
+## Hardware evidence and limits
 
-## Reported fault still needing live evidence
+FastWarm hardware is ET-63 / Smart WiFi 2.0, product `lmtejj3f4kafi2k1`, with seven
+days and four periods per day. Existing cloud group tests changed one period on
+all six group members and verified exact restoration. Six-byte event writes and
+complete individual weekly readbacks are validated. A 21-byte full-day report
+alone is not proof that the corresponding full-day write is supported.
 
-The user showed a Smart Life Monday programme:
-- Wake 05:30, 12°C
-- Leave 08:30, 20°C
-- Return 17:00, 12°C
-- Sleep 22:00, 12°C
+The reported mixed Monday programme and Holiday restoration fault have simulated
+regressions; this port has not established their exact physical cause or proved
+the fix on hardware. Do not present them as live-resolved.
 
-They also reported no programme restoration when switching Holiday off. Tests now cover mixed programmes and dropped restore requests, but the exact cause of the remaining 20°C period is unconfirmed. Do not present it as resolved on hardware.
+Do not enable temporary boosts/setbacks: the original combined Hold command failed
+and later online sequence/timer results do not establish reliable restoration
+across a changing native programme boundary. Keep the historical boundary jobs
+and evidence frozen; do not rearm or reschedule them as part of this port.
 
-## Validation and migration
+WAN-independent execution of an uploaded week, thermostat clock retention/DST,
+and local LAN programme compatibility remain distinct hardware checks. The linked
+tuya-local exact-product report and TinyTuya/TuyAPI documentation in the original
+handover justify investigation, not a compatibility claim. No LAN provider has
+been added and no automatic cloud fallback is introduced.
 
-`npm ci --ignore-scripts`, `npm run lint` and `npm run build` succeeded. There are 629 passing offline tests across 34 suites after the last code change; the UI cache-reference test passed after its script hash was refreshed.
+## Validation and next deployment
 
-The pure offline command used was:
+- Shared: `npm test` builds the plugin and passes all **268** offline tests,
+  including the Unix-socket transport, editor relay and owner-lock suites.
+- Tuya: `npm run lint` and `npm run build` pass. The command below passes **527**
+  tests in **33** suites. Only the two real-account suites are excluded; local
+  socket integration suites are included and pass.
 
-```sh
-npm test -- --runInBand --watchman=false --testPathIgnorePatterns test/home.test.ts test/custom.test.ts test/ui-server.test.ts test/device/thermostatRuntimeServer.test.ts
-```
+  ```sh
+  npm test -- --runInBand --watchman=false --testPathIgnorePatterns test/home.test.ts test/custom.test.ts
+  ```
 
-The home/custom suites use a real Tuya account. The two socket suites were excluded after an earlier full run failed to create Unix sockets with `listen EPERM` in this execution environment; they should be run in an environment that permits sockets. Do not weaken production IPC to accommodate that limitation.
+- Regression coverage includes both providers, failed Holiday then newer Home,
+  unknown occupancy, Home/Away/Home cancellation, cancellation arriving before
+  apply, interrupted restart restoration, stale/manual confirmation, grouped
+  budget checks, fresh post-activation week proof and editor asset hashes.
+- Known pre-claim cancellation requires an authenticated `notApplied: true`
+  acknowledgement. A late apply, missing proof, failed cancellation or previously
+  claimed write cannot invent that proof or convert an unknown outcome.
+- Shared source/tests/handover and the full newly published Tuya content were
+  checked for credentials and personal setup data. Runtime files, private
+  installation receipts, dependency directories and old private author metadata
+  are excluded from the public snapshots. The public source trees match the
+  tested implementation trees exactly before these documentation-only commits.
 
-The editor's script hash in `homebridge-ui/public/index.html` must match the first 12 hex characters of schedule.js's SHA-256 after script changes.
+Before any installation, back up saved profiles, history, enrollment, shared
+policy, root configuration and child-bridge pairing/accessory caches. Keep the
+paired candidate versions together when checking command cancellation. Preserve
+the existing grouped accessory/child bridge identities and provider configuration.
 
-Preserve saved per-room programmes, enrollment, history and meaningful Apple Home names. Plan accessory identity migration explicitly: moving between plugin owners or child bridges may require re-pairing or updating automations, so do not promise transparent migration without verifying it.
+Shared policy remains schema version 1 but `.8` omits `awayDelayMinutes` and
+`pendingAwayAt` when saving. A downgrade to `.7` requires restoring its matching
+pre-upgrade `HeatingProgrammes.json` backup because `.7` requires those fields.
+No rollback should invent a countdown, replay an interrupted upload or overwrite
+a newer programme without review.
 
-Continue with the architecture refactor on a feature branch and keep the existing PR fixes available. No npm publication, merge or live installation update has been performed.
+After installation, first verify read-only startup and both providers/controls.
+Any live programme-switch test needs fresh baseline evidence and a specific
+controlled plan. Do not infer hardware correctness from the offline suite or an
+HTTP acknowledgement. Unknown writes require review; no automatic replay.

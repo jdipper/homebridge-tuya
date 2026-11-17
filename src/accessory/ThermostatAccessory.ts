@@ -227,6 +227,9 @@ export default class ThermostatAccessory extends BaseAccessory {
       maxValue: Math.min(38, property.max / multiple),
       minStep: Math.max(0.1, property.step / multiple),
     };
+    if (isFastWarmThermostat(this.device) && this.deviceManager.fastWarmLan?.has(this.device.id)) {
+      props.minStep = 0.5;
+    }
     if (props.maxValue <= props.minValue) {
       this.log.warn('Invalid schema: %o, props will be reset to the default value.', schema);
       multiple = 1;

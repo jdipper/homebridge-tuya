@@ -3,6 +3,7 @@ import TuyaOpenAPI from '../../core/TuyaOpenAPI';
 import TuyaOpenMQ, { TuyaMQConnectionEvent } from '../../core/TuyaOpenMQ';
 import TuyaDevice from '../TuyaDevice';
 import { isFastWarmThermostat } from '../profile/FastWarmThermostat';
+import { FastWarmLanConnectionEvent, FastWarmLanTransport } from '../lan/FastWarmLanTransport';
 import FastWarmGroupCommandBroker, { FastWarmGroupCommandRejected, FastWarmProgrammeGroup } from './FastWarmGroupCommandBroker';
 import {
   collectFastWarmSchedule, decodeFastWarmSchedule, encodeFastWarmSchedule, FASTWARM_SCHEDULE_DAYS,
@@ -36,6 +37,7 @@ export interface FastWarmScheduleApplyResult {
 }
 
 export interface FastWarmScheduleManagerOptions {
+  localTransport?: FastWarmLanTransport;
   programmeGroups?: FastWarmProgrammeGroup[];
   readTimeoutMs?: number;
   commandTimeoutMs?: number;
@@ -217,6 +219,7 @@ export default class FastWarmScheduleManager {
   private writeAcknowledgedAt = new Map<string, number>();
   private writeDelays = new Map<string, () => void>();
   private readonly groups: FastWarmGroupCommandBroker;
+  private readonly localTransport?: FastWarmLanTransport;
 
   constructor(
     private api: TuyaOpenAPI,
@@ -230,7 +233,11 @@ export default class FastWarmScheduleManager {
     this.verificationAttempts = options.verificationAttempts ?? 3;
     this.verificationDelayMs = options.verificationDelayMs ?? 1000;
     this.writeIntervalMs = options.writeIntervalMs ?? 1000;
-    this.groups = new FastWarmGroupCommandBroker(api, options.programmeGroups, this.commandTimeoutMs);
+    this.localTransport = options.localTransport;
+    // A mixed group would send a selected thermostat both cloud and LAN commands.
+    const cloudGroups = options.programmeGroups?.filter(group =>
+      !group.deviceIds.some(id => this.localTransport?.has(id)));
+    this.groups = new FastWarmGroupCommandBroker(api, cloudGroups, this.commandTimeoutMs);
     if (![this.readTimeoutMs, this.commandTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0)
       || !Number.isSafeInteger(this.freshnessToleranceMs) || this.freshnessToleranceMs < 0) {
       throw new Error('Schedule timeouts must be positive integers and freshness tolerance must be nonnegative.');
@@ -244,6 +251,8 @@ export default class FastWarmScheduleManager {
     }
     this.mq.addRawMessageListener(this.onRawReport);
     this.mq.addConnectionListener(this.onConnection);
+    this.localTransport?.addRawMessageListener(this.onLanRawReport);
+    this.localTransport?.addConnectionListener(this.onLanConnection);
   }
 
   read(deviceId: string): Promise<FastWarmScheduleSnapshot> {
@@ -280,13 +289,13 @@ export default class FastWarmScheduleManager {
   /** One-use baseline handle; callers retain their per-device queue until apply/discard. */
   prepareAutomatic(deviceId: string): Promise<FastWarmAutomaticPreparation> {
     return this.enqueue(deviceId, async () => {
-      const connectionRevision = this.connectionRevision;
+      const connectionRevision = this.connectionFor(deviceId);
       const availabilityRevision = this.availabilityRevisions.get(deviceId) ?? 0;
-      if (!this.mq.isConnected()) {
+      if (!this.messageConnected(deviceId)) {
         throw new Error('A live Tuya message connection is required for an owned automatic baseline.');
       }
       const backup = await this.readInternal(deviceId, true);
-      if (connectionRevision !== this.connectionRevision || !this.mq.isConnected()
+      if (connectionRevision !== this.connectionFor(deviceId) || !this.messageConnected(deviceId)
         || availabilityRevision !== (this.availabilityRevisions.get(deviceId) ?? 0)) {
         throw new Error('The message connection changed during the automatic baseline read.');
       }
@@ -359,7 +368,7 @@ export default class FastWarmScheduleManager {
     return !this.closed && this.automaticBaselines.get(prepared.deviceId) === prepared
       && prepared.expiresAt > Date.now() && this.readGenerations.get(prepared.deviceId) === prepared.generation
       && (this.reportRevisions.get(prepared.deviceId) ?? 0) === prepared.reportRevision
-      && this.connectionRevision === prepared.connectionRevision && this.mq.isConnected()
+      && this.connectionFor(prepared.deviceId) === prepared.connectionRevision && this.messageConnected(prepared.deviceId)
       && (this.availabilityRevisions.get(prepared.deviceId) ?? 0) === prepared.availabilityRevision;
   }
 
@@ -375,12 +384,30 @@ export default class FastWarmScheduleManager {
 
   private onConnection = (event?: TuyaMQConnectionEvent) => {
     this.connectionRevision++;
-    for (const finish of [...this.writeDelays.values()]) {
-      finish();
+    for (const [id, finish] of [...this.writeDelays.entries()]) {
+      if (!this.localTransport?.has(id)) {
+        finish();
+      }
     }
     if (!event || !event.connected || event.recoveryRequired) {
       this.groups.invalidateCapabilities();
     }
+  };
+
+  private connectionFor(deviceId: string): number {
+    return this.localTransport?.has(deviceId) ? this.localTransport.generation(deviceId) : this.connectionRevision;
+  }
+
+  private messageConnected(deviceId: string): boolean {
+    return this.localTransport?.has(deviceId) ? this.localTransport.isConnected(deviceId) : this.mq.isConnected();
+  }
+
+  private onLanConnection = (event: FastWarmLanConnectionEvent) => {
+    if (!this.localTransport?.has(event.deviceId)) {
+      return;
+    }
+    this.availabilityRevisions.set(event.deviceId, (this.availabilityRevisions.get(event.deviceId) ?? 0) + 1);
+    this.writeDelays.get(event.deviceId)?.();
   };
 
   private async applyFromBackup(deviceId: string, draft: FastWarmScheduleState, backup: FastWarmScheduleSnapshot,
@@ -394,10 +421,11 @@ export default class FastWarmScheduleManager {
     if (expectedFingerprint !== undefined && backup.fingerprint !== expectedFingerprint) {
       return { status: 'conflict', backup, planned: 0, applied: 0, error: 'The thermostat schedule changed. Refresh before applying.' };
     }
-    const commands = planFastWarmScheduleWrites(backup.state, draft, writeMode);
-    const connectionRevision = this.connectionRevision;
+    const commands = planFastWarmScheduleWrites(backup.state, draft,
+      this.localTransport?.has(deviceId) ? 'single-events' : writeMode);
+    const connectionRevision = this.connectionFor(deviceId);
     const availabilityRevision = this.availabilityRevisions.get(deviceId) ?? 0;
-    const writeContextCurrent = () => !this.closed && connectionRevision === this.connectionRevision
+    const writeContextCurrent = () => !this.closed && connectionRevision === this.connectionFor(deviceId)
       && availabilityRevision === (this.availabilityRevisions.get(deviceId) ?? 0);
     if (commands.length === 0 && !guardNoChanges) {
       return { status: 'no_changes', backup, planned: 0, applied: 0 };
@@ -466,7 +494,8 @@ export default class FastWarmScheduleManager {
         applied++;
       } catch (error) {
         writeError = errorText(error);
-        unknownOutcome = submitted && !(error instanceof ScheduleCommandRejected) && !(error instanceof FastWarmGroupCommandRejected);
+        unknownOutcome = submitted && !(error instanceof ScheduleCommandRejected) && !(error instanceof FastWarmGroupCommandRejected)
+          && !(error instanceof ScheduleCommandNotSent);
         superseded = error instanceof FastWarmSelectionSuperseded
           || (isCurrent?.() === false && (error instanceof ScheduleCommandNotSent || error instanceof FastWarmGroupCommandRejected));
         break;
@@ -525,6 +554,8 @@ export default class FastWarmScheduleManager {
     this.automaticPreparations.clear(); this.automaticBaselines.clear();
     this.mq.removeRawMessageListener(this.onRawReport);
     this.mq.removeConnectionListener(this.onConnection);
+    this.localTransport?.removeRawMessageListener(this.onLanRawReport);
+    this.localTransport?.removeConnectionListener(this.onLanConnection);
     for (const session of [...this.sessions.values()]) {
       session.finish(false, 'Schedule manager closed.');
     }
@@ -595,6 +626,13 @@ export default class FastWarmScheduleManager {
     if (!device || !isFastWarmThermostat(device)) {
       throw new Error('Schedules are supported only for the verified FastWarm ET-63 product.');
     }
+    if (this.localTransport?.has(deviceId)) {
+      if (!this.localTransport.isConnected(deviceId)) {
+        throw new Error('The local thermostat connection is unavailable; no cloud fallback was attempted.');
+      }
+      // The local transport checks native Celsius status at its coherent dispatch boundary.
+      return device;
+    }
     if (!device.online) {
       throw new Error('The thermostat is offline; no schedule command was sent.');
     }
@@ -605,10 +643,22 @@ export default class FastWarmScheduleManager {
   }
 
   private async issue(deviceId: string, properties: Record<string, string | boolean>, shouldProceed?: () => boolean, allowGroup = false) {
+    if (this.localTransport?.has(deviceId)) {
+      try {
+        await this.localTransport.issueOnce(deviceId, properties,
+          {timeoutMs: this.commandTimeoutMs, shouldProceed});
+      } catch (error) {
+        if (error && typeof error === 'object' && 'writeAttempted' in error && error.writeAttempted === false) {
+          throw new ScheduleCommandNotSent(errorText(error));
+        }
+        throw error;
+      }
+      return;
+    }
     if (allowGroup && (properties.inquire === true || typeof properties.week_program === 'string')) {
       const guard = () => {
         this.requireDevice(deviceId);
-        return this.mq.isConnected() && shouldProceed?.() !== false;
+        return this.messageConnected(deviceId) && shouldProceed?.() !== false;
       };
       await this.groups.send(deviceId, properties.inquire === true ? {inquire: true} : {week_program: properties.week_program as string},
         guard, () => this.issue(deviceId, properties, guard));
@@ -634,6 +684,30 @@ export default class FastWarmScheduleManager {
   private readInternal(deviceId: string, allowGroup = false): Promise<FastWarmScheduleSnapshot> {
     this.requireDevice(deviceId);
     this.readGenerations.set(deviceId, (this.readGenerations.get(deviceId) ?? 0) + 1);
+    if (this.localTransport?.has(deviceId)) {
+      const generation = this.connectionFor(deviceId);
+      const requestedAt = Date.now();
+      return this.localTransport.readSchedule(deviceId, {timeoutMs: this.readTimeoutMs}).then(read => {
+        const snapshot: FastWarmScheduleSnapshot = {deviceId, ...structuredClone(read)};
+        if (!Number.isSafeInteger(snapshot.startedAt) || !Number.isSafeInteger(snapshot.finishedAt)
+          || snapshot.startedAt < requestedAt - this.freshnessToleranceMs
+          || snapshot.finishedAt < snapshot.startedAt || snapshot.finishedAt > Date.now() + this.freshnessToleranceMs) {
+          snapshot.errors.push('The local programme read did not establish a fresh inquiry window.');
+        }
+        if (!this.messageConnected(deviceId) || generation !== this.connectionFor(deviceId)) {
+          snapshot.errors.push('The local connection changed during the programme inquiry.');
+        }
+        if (snapshot.state.complete) {
+          validateDraft(snapshot.state);
+        }
+        if (!snapshot.state.complete || snapshot.timedOut || snapshot.errors.length
+          || snapshot.fingerprint !== fingerprint(snapshot.state)) {
+          snapshot.fingerprint = null;
+        }
+        this.snapshots.set(deviceId, snapshot);
+        return structuredClone(snapshot);
+      });
+    }
     return new Promise(resolve => {
       const session: ReadSession = {
         startedAt: Date.now(), reports: [], acknowledged: false,
@@ -675,6 +749,9 @@ export default class FastWarmScheduleManager {
     }
     const data = message as { devId?: string; status?: unknown[] };
     if (!data.devId || !Array.isArray(data.status)) {
+      return;
+    }
+    if (this.localTransport?.has(data.devId)) {
       return;
     }
     const device = this.getDevice(data.devId);
@@ -719,6 +796,30 @@ export default class FastWarmScheduleManager {
       } catch {
         // Invalid programme chunks cannot establish any missing schedule entries.
       }
+    }
+  };
+
+  private onLanRawReport = (_topic: string, protocol: number, message: unknown) => {
+    if (protocol !== 4 || !message || typeof message !== 'object') {
+      return;
+    }
+    const data = message as {devId?: string; status?: unknown[]; source?: string};
+    if (data.source !== 'lan' || !data.devId || !this.localTransport?.has(data.devId) || !Array.isArray(data.status)) {
+      return;
+    }
+    // Collection belongs to readSchedule's inquiry window. These reports only invalidate owned baselines.
+    for (const value of data.status) {
+      if (!value || typeof value !== 'object') {
+        continue;
+      }
+      const report = value as Record<string, unknown>, id = report.dp_id ?? report.dpId;
+      if (report.code !== 'week_program' && id !== 119 && id !== '119' && !Object.hasOwn(report, '119')) {
+        continue;
+      }
+      try {
+        decodeFastWarmSchedule(String(Object.hasOwn(report, '119') ? report['119'] : report.value));
+        this.reportRevisions.set(data.devId, (this.reportRevisions.get(data.devId) ?? 0) + 1);
+      } catch { /* Malformed reports establish no programme revision. */ }
     }
   };
 }

@@ -19,6 +19,10 @@ import TuyaProgrammeProvider from './device/schedule/TuyaProgrammeProvider';
 import { isFastWarmThermostat } from './device/profile/FastWarmThermostat';
 import { writeDeviceCache } from './util/DeviceCache';
 import { TuyaApiUsageMeter } from './util/TuyaApiUsage';
+import FastWarmLanController from './device/lan/FastWarmLanController';
+import { FastWarmLanKeyStore, parseFastWarmLocalDevices } from './device/lan/FastWarmLanConfiguration';
+import { readFastWarmLanMetadata, saveFastWarmLanMetadata } from './device/lan/FastWarmLanBootstrap';
+import FastWarmLanBootstrapAPI from './device/lan/FastWarmLanBootstrapAPI';
 
 
 /**
@@ -40,6 +44,8 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
   public programmeProvider?: TuyaProgrammeProvider;
   private legacyProgrammeControls: PlatformAccessory[] = [];
   private apiUsageMeter?: TuyaApiUsageMeter;
+  private localController?: FastWarmLanController;
+  private cloudDiscoveryAvailable = true;
 
   validate() {
     let result;
@@ -60,6 +66,12 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     }
 
     if (!this.validateDeviceOverrides() || !this.validateSchema()) {
+      return false;
+    }
+    try {
+      parseFastWarmLocalDevices(this.options.fastWarmLocalDevices);
+    } catch {
+      this.log.error('Invalid FastWarm local connection configuration. Use private IPv4 addresses and protocol 3.5.');
       return false;
     }
 
@@ -145,6 +157,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     this.api.on('shutdown', () => {
       void this.programmeProvider?.close().catch(() => this.log.warn('FastWarm programme provider shutdown did not complete.'));
       this.deviceManager?.mq.stop();
+      this.localController?.close();
       void this.apiUsageMeter?.flush().catch(() => this.log.warn('Tuya API usage tracking could not finish saving.'));
     });
   }
@@ -167,16 +180,44 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
   async initDevices() {
 
     let devices: TuyaDevice[] | undefined;
-    if (this.options.projectType === '1') {
-      devices = await this.initCustomProject();
-    } else if (this.options.projectType === '2') {
-      devices = await this.initHomeProject();
-    } else {
-      this.log.warn(`Unsupported projectType: ${this.config.options.projectType}.`);
+    try {
+      if (this.options.projectType === '1') {
+        devices = await this.initCustomProject();
+      } else if (this.options.projectType === '2') {
+        devices = await this.initHomeProject();
+      } else {
+        this.log.warn(`Unsupported projectType: ${this.config.options.projectType}.`);
+      }
+    } catch (error) {
+      if (!this.localDevices().length) {
+        throw error;
+      }
+      this.log.warn('Cloud discovery is unavailable. Checking saved local thermostat metadata.');
+    }
+    if (!devices && this.localDevices().length && this.deviceManager) {
+      const cached = await readFastWarmLanMetadata(this.api.user.persistPath(), this.programmeInstanceId())
+        .catch(() => [] as TuyaDevice[]);
+      if (cached.some(device => this.localController?.has(device.id))) {
+        this.cloudDiscoveryAvailable = false;
+        this.deviceManager.devices = cached;
+        this.deviceManager.ownerIDs = [...new Set(cached.map(device => device.owner_id))];
+        devices = cached;
+        this.log.warn('Using saved thermostat metadata. Local devices use LAN availability; cloud devices remain unavailable.');
+      }
     }
 
     if (!devices || !this.deviceManager) {
       return;
+    }
+    if (this.localController) {
+      await this.localController.start(devices);
+      if (this.cloudDiscoveryAvailable) {
+        await saveFastWarmLanMetadata(this.api.user.persistPath(), this.programmeInstanceId(), devices)
+          .catch(() => this.log.warn('Local thermostat startup metadata could not be saved.'));
+      }
+    }
+    if (this.deviceManager.api instanceof FastWarmLanBootstrapAPI) {
+      this.deviceManager.api.finishBootstrap();
     }
 
     // override device category
@@ -199,7 +240,9 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       device.unbridged = deviceConfig.unbridged;
     }
 
-    await this.deviceManager.updateInfraredRemotes(devices);
+    if (this.cloudDiscoveryAvailable) {
+      await this.deviceManager.updateInfraredRemotes(devices);
+    }
 
     this.log.info(`Got ${devices.length} device(s) and scene(s).`);
     const file = path.join(this.api.user.persistPath(), `TuyaDeviceList.${this.deviceManager.api.tokenInfo.uid}.json`);
@@ -207,7 +250,9 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     if (!fs.existsSync(this.api.user.persistPath())) {
       await fs.promises.mkdir(this.api.user.persistPath());
     }
-    await writeDeviceCache(file, devices);
+    if (this.cloudDiscoveryAvailable) {
+      await writeDeviceCache(file, devices);
+    }
 
     // add accessories
     for (const device of devices) {
@@ -225,6 +270,9 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
     // remove unused accessories
     for (const cachedAccessory of this.cachedAccessories) {
+      if (!this.cloudDiscoveryAvailable) {
+        continue; // A WAN outage never retires accessories missing from thermostat-only metadata.
+      }
       this.log.warn('Removing unused accessory from cache:', cachedAccessory.displayName);
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [cachedAccessory]);
     }
@@ -242,6 +290,36 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       projectType: this.options.projectType, endpoint: this.options.endpoint, accessId: this.options.accessId,
       username: this.options.username, bridge: this.config._bridge?.username ?? this.config.name,
     });
+  }
+
+  private localDevices() {
+    return parseFastWarmLocalDevices(this.options.fastWarmLocalDevices).filter(device => device.enabled !== false);
+  }
+
+  private async attachLocalController(manager: TuyaDeviceManager): Promise<void> {
+    const devices = this.localDevices();
+    if (!devices.length) {
+      return;
+    }
+    const persistPath = this.api.user.persistPath();
+    await fs.promises.mkdir(persistPath, {recursive: true, mode: 0o700});
+    const store = new FastWarmLanKeyStore(persistPath, this.programmeInstanceId());
+    const keys = new Map<string, string>();
+    for (const device of devices) {
+      try {
+        const key = await store.read(device.deviceId);
+        if (key) {
+          keys.set(device.deviceId, key);
+        } else {
+          this.log.warn('A selected local thermostat needs its private local key. Open Tuya settings to import it.');
+        }
+      } catch {
+        this.log.warn('The private local thermostat key store is unavailable. Local control remains disabled.');
+      }
+    }
+    this.localController = new FastWarmLanController(devices, keys);
+    manager.setFastWarmLan(this.localController);
+    this.deviceManager = manager;
   }
 
   private async attachUsageMeter(api: TuyaOpenAPI): Promise<void> {
@@ -339,9 +417,11 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     let res;
     const { endpoint, accessId, accessKey, debug, debugLevel } = this.options;
     const debugMode = debug && ((debugLevel ?? '').length > 0 ? debugLevel?.includes('api') : true);
-    const api = new TuyaOpenAPI(endpoint, accessId, accessKey, 'en', debugMode, this.options.forceIPv4);
+    const APIClass = this.localDevices().length ? FastWarmLanBootstrapAPI : TuyaOpenAPI;
+    const api = new APIClass(endpoint, accessId, accessKey, 'en', debugMode, this.options.forceIPv4);
     await this.attachUsageMeter(api);
     const deviceManager = new TuyaCustomDeviceManager(api, debugMode);
+    await this.attachLocalController(deviceManager);
 
     this.log.info('Get token.');
     res = await api.getToken();
@@ -429,7 +509,8 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     let res;
     const { accessId, accessKey, countryCode, username, password, appSchema, endpoint, debug, debugLevel } = this.options;
     const debugMode = debug && ((debugLevel ?? '').length > 0 ? debugLevel?.includes('api') : true);
-    const api = new TuyaOpenAPI(
+    const APIClass = this.localDevices().length ? FastWarmLanBootstrapAPI : TuyaOpenAPI;
+    const api = new APIClass(
       (endpoint && endpoint.length > 0) ? endpoint : TuyaOpenAPI.getDefaultEndpoint(countryCode),
       accessId,
       accessKey,
@@ -438,6 +519,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       this.options.forceIPv4);
     await this.attachUsageMeter(api);
     const deviceManager = new TuyaHomeDeviceManager(api, debugMode);
+    await this.attachLocalController(deviceManager);
 
     this.log.info('Log in to Tuya Cloud.');
     res = await api.homeLogin(countryCode, username, password, appSchema);

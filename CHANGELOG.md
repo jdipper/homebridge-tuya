@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.7.3-jdipper.11] - (2026.11.17)
+
+### Added
+- Optional per-device FastWarm protocol 3.5 LAN control for measured temperatures, targets and native weekly programmes, retaining existing accessories and the shared Heating Programmes provider. See [local control](docs/fastwarm-local-control.md).
+- Private local-key setup in the plugin UI and vetted metadata for startup during a cloud outage. Keys are excluded from normal configuration and UI responses.
+
+### Changed
+- Isolate selected LAN thermostats from cloud commands, cloud observations and mixed cloud groups. Require complete native readback and retain command pacing, cancellation and unknown-outcome safeguards without automatic write retries or cloud fallback.
+
 ## [2.7.3-jdipper.10] - (2026.11.17)
 
 ### Fixed

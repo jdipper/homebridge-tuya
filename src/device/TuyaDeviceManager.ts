@@ -12,6 +12,7 @@ import TuyaDevice, {
 } from './TuyaDevice';
 import { RTSPCameraConfig } from '../config';
 import { maskSecret, uuidFromSeed } from '../util/util';
+import type { FastWarmLanConnectionEvent, FastWarmLanTransport } from './lan/FastWarmLanTransport';
 import {
   FASTWARM_CURRENT_TEMPERATURE_SCHEMA, FastWarmTemperatureReport, getFastWarmTemperatureReport,
   getFastWarmSetTemperatureReport, isFastWarmSetTemperatureReport, isFastWarmTemperatureReport, isFastWarmThermostat,
@@ -30,7 +31,7 @@ export interface ThermostatTemperatureObservation {
   value: number;
   reportedAt?: number;
   receivedAt: number;
-  source: 'shadow' | 'mqtt';
+  source: 'shadow' | 'mqtt' | 'lan';
 }
 
 enum TuyaMQTTProtocol {
@@ -59,6 +60,83 @@ export default class TuyaDeviceManager extends EventEmitter {
   private supplementalTemperatureBudgetWarning = false;
   private temperatureObservations = new Map<string, ThermostatTemperatureObservation>();
   private targetTemperatureReports = new Map<string, FastWarmTemperatureReport & { time: number }>();
+  public fastWarmLan?: FastWarmLanTransport;
+
+  setFastWarmLan(transport: FastWarmLanTransport): void {
+    if (this.fastWarmLan) {
+      throw new Error('The local thermostat connection already has an owner.');
+    }
+    this.fastWarmLan = transport;
+    transport.addRawMessageListener((_topic, _protocol, message, receivedAt) => {
+      const device = this.getDevice(message.devId);
+      if (!device || !isFastWarmThermostat(device) || !transport.has(device.id)
+        || !Number.isSafeInteger(receivedAt) || receivedAt <= 0 || receivedAt > Date.now() + 5000) {
+        return;
+      }
+      device.online = transport.isConnected(device.id);
+      const changed: TuyaDeviceStatus[] = [];
+      const set = (code: string, value: string | number | boolean) => {
+        const previous = device.status.find(item => item.code === code);
+        if (previous?.value === value) {
+          return;
+        }
+        if (previous) {
+          previous.value = value;
+        } else {
+          device.status.push({code, value});
+        }
+        changed.push({code, value});
+      };
+      const unit = message.status.find(item => item.dp_id === 107)?.value;
+      if (typeof unit === 'boolean') {
+        set('temp_unit_convert', unit ? 'f' : 'c');
+        if (unit) {
+          this.temperatureAwaitingConnectionReport.add(device.id);
+        }
+      }
+      for (const property of message.status) {
+        if (property.dp_id === 101 && typeof property.value === 'boolean') {
+          set('switch', property.value);
+        } else if (property.dp_id === 108 && typeof property.value === 'boolean') {
+          set('child_lock', property.value);
+        } else if (property.dp_id === 103 && ['smart', 'hold', 'holiday'].includes(String(property.value))) {
+          set('mode', String(property.value));
+        } else if (property.dp_id === 110 && typeof property.value === 'number' && Number.isSafeInteger(property.value)
+          && property.value >= 0) {
+          set('Event_Adaptive_Set', property.value);
+        }
+      }
+      const celsius = device.status.some(item => item.code === 'temp_unit_convert' && item.value === 'c');
+      const target = celsius && message.status.map(getFastWarmSetTemperatureReport).find(value => value !== undefined);
+      if (target) {
+        const status = this.applyTargetTemperature(device, target, receivedAt);
+        if (status) {
+          changed.push(status);
+        }
+      }
+      const room = celsius && message.status.map(getFastWarmTemperatureReport).find(value => value !== undefined);
+      if (room) {
+        const status = this.applySupplementalTemperature(device, room, 'lan', true, receivedAt);
+        if (status) {
+          changed.push(status);
+        }
+        this.emit(Events.THERMOSTAT_OBSERVATION, device, this.getTemperatureObservation(device.id));
+      }
+      if (changed.length) {
+        this.emit(Events.DEVICE_STATUS_UPDATE, device, changed);
+      }
+    });
+    transport.addConnectionListener((event: FastWarmLanConnectionEvent) => {
+      const device = this.getDevice(event.deviceId);
+      if (device && isFastWarmThermostat(device)) {
+        device.online = event.connected;
+        if (!event.connected) {
+          this.temperatureAwaitingConnectionReport.add(device.id);
+        }
+        this.emit(Events.DEVICE_INFO_UPDATE, device);
+      }
+    });
+  }
 
   constructor(
     public api: TuyaOpenAPI,
@@ -215,6 +293,9 @@ export default class TuyaDeviceManager extends EventEmitter {
 
   /** Supplement this product's incomplete standard schema without changing its command API. */
   async enrichDeviceStatus(device: TuyaDevice) {
+    if (this.fastWarmLan?.has(device.id)) {
+      device.online = this.fastWarmLan.isConnected(device.id);
+    }
     const currentSchema = device.schema.find(schema => schema.code.toLowerCase() === 'temp_current');
     if (!isFastWarmThermostat(device) || (currentSchema && !this.supplementalTemperatureSchemas.has(currentSchema))) {
       this.supplementalTemperatureDevices.delete(device.id);
@@ -244,6 +325,9 @@ export default class TuyaDeviceManager extends EventEmitter {
    * rather than the age of that unchanged value, determines recovery.
    */
   async refreshSupplementalTemperature(device: TuyaDevice): Promise<void> {
+    if (this.fastWarmLan?.has(device.id)) {
+      return; // The single local owner refreshes status; HomeKit never starts a second poller.
+    }
     if (!isFastWarmThermostat(device) || !this.supplementalTemperatureDevices.has(device.id) || !device.online) {
       return;
     }
@@ -298,6 +382,9 @@ export default class TuyaDeviceManager extends EventEmitter {
       return;
     }
     for (const device of this.devices) {
+      if (this.fastWarmLan?.has(device.id)) {
+        continue;
+      }
       if (!this.supplementalTemperatureDevices.has(device.id)) {
         if (event.recoveryRequired && isFastWarmThermostat(device)) {
           this.temperatureAwaitingConnectionReport.add(device.id);
@@ -328,6 +415,12 @@ export default class TuyaDeviceManager extends EventEmitter {
   isTemperatureAvailable(deviceId: string): boolean {
     const device = this.getDevice(deviceId);
     const observation = this.temperatureObservations.get(deviceId);
+    if (this.fastWarmLan?.has(deviceId)) {
+      return Boolean(device && isFastWarmThermostat(device) && this.fastWarmLan.isConnected(deviceId)
+        && observation?.source === 'lan'
+        && !this.temperatureAwaitingConnectionReport.has(deviceId)
+        && device.status.some(item => item.code === 'temp_unit_convert' && item.value === 'c'));
+    }
     if (!device?.online || !observation || this.temperatureAwaitingConnectionReport.has(deviceId)) {
       return false;
     }
@@ -343,6 +436,9 @@ export default class TuyaDeviceManager extends EventEmitter {
       const response = await this.api.request('get', `/v2.0/cloud/thing/${device.id}/shadow/properties`, {
         codes: this.hasFastWarmCelsiusTarget(device) ? 'RoomTemper,SetTemp' : 'RoomTemper',
       }, null, { attempts: 1, timeoutMs: 10000 });
+      if (this.fastWarmLan?.has(device.id)) {
+        return;
+      }
       const properties: unknown[] = Array.isArray(response.result?.properties) ? response.result.properties : [];
       if (response.success !== false && this.hasFastWarmCelsiusTarget(device)) {
         const target = properties.map(getFastWarmSetTemperatureReport).find(value => value !== undefined);
@@ -380,16 +476,17 @@ export default class TuyaDeviceManager extends EventEmitter {
   }
 
   private applySupplementalTemperature(
-    device: TuyaDevice, report: FastWarmTemperatureReport, source?: 'shadow' | 'mqtt', connectionRecovered = true,
+    device: TuyaDevice, report: FastWarmTemperatureReport, source?: 'shadow' | 'mqtt' | 'lan', connectionRecovered = true,
+    receivedAt = Date.now(),
   ): TuyaDeviceStatus | undefined {
-    const time = report.time ?? Date.now();
+    const time = report.time ?? receivedAt;
     if (time > Date.now() + 5 * 60_000 || time < (this.supplementalTemperatureReports.get(device.id)?.time ?? 0)) {
       return undefined;
     }
     this.supplementalTemperatureReports.set(device.id, { ...report, time });
     if (source) {
       this.temperatureObservations.set(device.id, {
-        value: report.value, reportedAt: report.time, receivedAt: Date.now(), source,
+        value: report.value, reportedAt: report.time, receivedAt, source,
       });
       if (connectionRecovered) {
         this.temperatureAwaitingConnectionReport.delete(device.id);
@@ -414,8 +511,10 @@ export default class TuyaDeviceManager extends EventEmitter {
   }
 
   /** Keep the active native target truthful without treating it as a room measurement. */
-  private applyTargetTemperature(device: TuyaDevice, report: FastWarmTemperatureReport): TuyaDeviceStatus | undefined {
-    const time = report.time ?? Date.now();
+  private applyTargetTemperature(
+    device: TuyaDevice, report: FastWarmTemperatureReport, receivedAt = Date.now(),
+  ): TuyaDeviceStatus | undefined {
+    const time = report.time ?? receivedAt;
     if (time > Date.now() + 5 * 60_000 || time < (this.targetTemperatureReports.get(device.id)?.time ?? 0)) {
       return undefined;
     }
@@ -698,6 +797,41 @@ export default class TuyaDeviceManager extends EventEmitter {
 
 
   async sendCommands(deviceID: string, commands: TuyaDeviceStatus[]) {
+    if (this.fastWarmLan?.has(deviceID)) {
+      const local = this.fastWarmLan;
+      const device = this.getDevice(deviceID);
+      if (!device || !isFastWarmThermostat(device) || !local.isConnected(deviceID)) {
+        throw new Error('The local thermostat is unavailable.');
+      }
+      const properties: Record<string, string | number | boolean> = {};
+      for (const command of commands) {
+        const code = {switch: 'power1', temp_set: 'SetTemp', child_lock: 'Lock', mode: 'ControlMode'}[command.code];
+        if (!code || Object.prototype.hasOwnProperty.call(properties, code)) {
+          throw new Error('This command is not supported by the local thermostat connection.');
+        }
+        properties[code] = command.value;
+      }
+      const before = await local.readProperties(deviceID, ['TemperUnitChange']);
+      if (before.properties[0]?.value !== false) {
+        throw new Error('Local thermostat commands require Celsius.');
+      }
+      await local.issueOnce(deviceID, properties, {shouldProceed: () => local.isConnected(deviceID)
+        && local.generation(deviceID) === before.generation});
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const readback = await local.readProperties(deviceID, [...Object.keys(properties), 'TemperUnitChange']);
+        if (readback.generation !== before.generation) {
+          break;
+        }
+        if (readback.properties.find(item => item.code === 'TemperUnitChange')?.value !== false) {
+          throw new Error('The local thermostat units changed before verification. Do not automatically retry.');
+        }
+        if (Object.entries(properties).every(([code, value]) => readback.properties.find(item => item.code === code)?.value === value)) {
+          return true;
+        }
+      }
+      throw new Error('The local command outcome could not be verified. Do not automatically retry.');
+    }
     const res = await this.api.post(`/v1.0/devices/${deviceID}/commands`, { commands });
     return res.result;
   }
@@ -737,6 +871,9 @@ export default class TuyaDeviceManager extends EventEmitter {
         const device = this.getDevice(devId);
         if (!device) {
           return;
+        }
+        if (this.fastWarmLan?.has(device.id)) {
+          return; // Cloud reports cannot overwrite the selected thermostat's LAN truth.
         }
 
         const previousObservation = this.temperatureObservations.get(device.id);
@@ -838,6 +975,9 @@ export default class TuyaDeviceManager extends EventEmitter {
         } else if (bizCode === 'online' || bizCode === 'offline') {
           const device = this.getDevice(devId);
           if (!device) {
+            return;
+          }
+          if (this.fastWarmLan?.has(device.id)) {
             return;
           }
           const wasOnline = device.online;

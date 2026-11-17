@@ -1,3 +1,112 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Tuya device connection</title></head>
-<body><h2>Heating programmes have moved</h2><p>Open the <strong>Heating Programmes</strong> plugin to edit programmes and manage Home, Away and Holiday for FastWarm and Hive.</p><p>This Tuya plugin continues to provide device controls and room temperatures.</p><button id="settings" type="button">Tuya settings</button><script>document.getElementById('settings').addEventListener('click', () => window.homebridge.showSchemaForm());</script></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tuya device connection</title>
+  <style>
+    body {font: 16px system-ui, sans-serif; line-height: 1.5; max-width: 740px; margin: 24px auto; padding: 0 16px;}
+    button, input {font: inherit; padding: 8px 12px; border: 1px solid #888; border-radius: 5px;}
+    button {cursor: pointer;} button:disabled {cursor: wait;}
+    .device {border: 1px solid #888; border-radius: 8px; padding: 16px; margin: 16px 0;}
+    .device h3 {font-size: 1rem; margin-top: 0; overflow-wrap: anywhere;}
+    .device label {display: block; margin-bottom: 6px;}
+    .device input {box-sizing: border-box; max-width: 100%; margin: 0 8px 8px 0;}
+    .hint {font-size: .9rem;} .result {margin-bottom: 0;}
+  </style>
+</head>
+<body>
+  <h2>Heating programmes have moved</h2>
+  <p>Open the <strong>Heating Programmes</strong> plugin on the Plugins page to edit programmes and manage Home, Away and Holiday for FastWarm and Hive.</p>
+  <p>This Tuya plugin continues to provide device controls and room temperatures.</p>
+  <button id="settings" type="button">Tuya settings</button>
+
+  <h2>FastWarm local connection</h2>
+  <p class="hint">In Tuya settings, add a local device with its device ID, private IPv4 address and protocol 3.5. Then save its 16-character local device key here. Keys are stored privately on Homebridge, separately from settings.</p>
+  <button id="refresh" type="button">Refresh local devices</button>
+  <p id="notice" role="status" aria-live="polite"></p>
+  <div id="devices"></div>
+  <script>
+    const homebridge = window.homebridge;
+    const devices = document.getElementById('devices');
+    const notice = document.getElementById('notice');
+    document.getElementById('settings').addEventListener('click', () => homebridge.showSchemaForm());
+    document.getElementById('refresh').addEventListener('click', loadDevices);
+
+    function element(tag, text) {
+      const node = document.createElement(tag);
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function deviceCard(device) {
+      const card = element('section');
+      card.className = 'device';
+      card.appendChild(element('h3', device.deviceId));
+      card.appendChild(element('p', device.address + ' · Protocol ' + device.version + (device.enabled ? '' : ' · Disabled in settings')));
+      const stored = element('p', device.keyStored ? 'Device key stored' : 'Device key needed');
+      card.appendChild(stored);
+      const form = element('form');
+      const label = element('label', 'Local device key');
+      const key = element('input');
+      key.type = 'password';
+      key.autocomplete = 'off';
+      key.spellcheck = false;
+      key.minLength = 16;
+      key.maxLength = 16;
+      key.required = true;
+      label.appendChild(key);
+      form.appendChild(label);
+      const save = element('button', 'Save device key');
+      save.type = 'submit';
+      form.appendChild(save);
+      const result = element('p');
+      result.className = 'result';
+      result.setAttribute('role', 'status');
+      result.setAttribute('aria-live', 'polite');
+      form.appendChild(result);
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const localKey = key.value;
+        key.value = '';
+        result.textContent = '';
+        if (!/^[\x20-\x7e]{16}$/.test(localKey)) {
+          result.textContent = 'Enter a 16-character device key using printable ASCII characters.';
+          return;
+        }
+        save.disabled = true;
+        try {
+          const response = await homebridge.request('/local/key', {instanceId: device.instanceId, deviceId: device.deviceId, localKey});
+          if (response.stored !== true || response.restartRequired !== true) throw new Error();
+          stored.textContent = 'Device key stored';
+          result.textContent = 'Key saved. Restart the Tuya child bridge to use it.';
+        } catch {
+          result.textContent = 'The key could not be saved. Check Tuya settings and try again.';
+        } finally {
+          key.value = '';
+          save.disabled = false;
+        }
+      });
+      card.appendChild(form);
+      return card;
+    }
+
+    async function loadDevices() {
+      document.getElementById('refresh').disabled = true;
+      devices.replaceChildren();
+      notice.textContent = 'Loading local devices…';
+      try {
+        const response = await homebridge.request('/local/devices');
+        if (!response || !Array.isArray(response.devices)) throw new Error();
+        for (const device of response.devices) devices.appendChild(deviceCard(device));
+        notice.textContent = response.devices.length ? '' : 'No local devices configured. Add one in Tuya settings, save, then refresh.';
+      } catch {
+        notice.textContent = 'Local setup is unavailable. Check Tuya settings and Homebridge file permissions.';
+      } finally {
+        document.getElementById('refresh').disabled = false;
+      }
+    }
+    loadDevices();
+  </script>
+</body>
+</html>

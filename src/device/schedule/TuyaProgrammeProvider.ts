@@ -15,6 +15,7 @@ import FastWarmScheduleManager, {
 import TuyaProgrammeProviderServer from './TuyaProgrammeProviderServer';
 import { FastWarmProgrammeGroup } from './FastWarmGroupCommandBroker';
 import { FastWarmActiveTargetContext, getFastWarmActivePeriod, validateFastWarmActiveTarget } from './FastWarmActiveTarget';
+import { FastWarmLanConnectionEvent, FastWarmLanTransport } from '../lan/FastWarmLanTransport';
 
 const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
 type WeeklyProgramme = Record<typeof WEEKDAYS[number], { startMinute: number; targetC: number }[]>;
@@ -23,6 +24,7 @@ type Transport = Pick<FastWarmScheduleManager, 'read' | 'apply' | 'activateProgr
   | 'invalidateAutomatic' | 'invalidateGroupCapabilities'>>;
 interface NativeSettings {
   mode: string; grouping: number; targetC?: number; targetReadAt?: number; targetReportedAt?: number;
+  unit?: 'c' | 'f'; power?: boolean;
 }
 interface Preview {
   token: string; deviceId: string; programme: WeeklyProgramme; expiresAt: number; changesRequired: boolean;
@@ -116,9 +118,12 @@ export default class TuyaProgrammeProvider {
   private readonly targetHints = new Map<string, {targetC: number; receivedAt: number; sourceAt?: number}>();
   private automaticLeases = new Map<string, AutomaticLease>();
   private readonly automaticJournalPath: string;
+  private readonly localTransport?: FastWarmLanTransport;
+  private readonly localControlHints = new Map<string, Map<string, {value: unknown; receivedAt: number}>>();
 
   constructor(private readonly manager: TuyaDeviceManager, persistPath: string, public readonly instanceId: string,
     transport?: Transport, options: TuyaProgrammeProviderOptions = {}) {
+    this.localTransport = (manager as TuyaDeviceManager & {fastWarmLan?: FastWarmLanTransport}).fastWarmLan;
     if (options.programmeWriteModes !== undefined && !Array.isArray(options.programmeWriteModes)) {
       throw new Error('Validated FastWarm programme write modes must be a per-device list.');
     }
@@ -136,15 +141,17 @@ export default class TuyaProgrammeProvider {
       }
     }
     this.schedules = transport ?? new FastWarmScheduleManager(manager.api, manager.mq, id => manager.getDevice(id),
-      {programmeGroups: options.programmeGroups});
+      {programmeGroups: options.programmeGroups, localTransport: this.localTransport});
     this.automaticJournalPath = path.join(path.dirname(persistPath), 'heating-operations', `tuya-${instanceId}`);
     this.server = new TuyaProgrammeProviderServer(persistPath, instanceId, this.handle,
       Boolean(this.schedules.prepareAutomatic && this.schedules.applyAutomatic && this.schedules.discardAutomatic));
     manager.mq?.addConnectionListener?.(this.onConnection);
     manager.mq?.addRawMessageListener?.(this.onRawControls);
+    this.localTransport?.addRawMessageListener(this.onLanRawControls);
+    this.localTransport?.addConnectionListener(this.onLanConnection);
     // Cache the initial availability without manufacturing a history observation.
     for (const device of this.devices()) {
-      this.onlineStates.set(device.id, device.online);
+      this.onlineStates.set(device.id, this.isOnline(device));
     }
     if (typeof manager.on === 'function') {
       manager.on(TuyaDeviceManager.Events.THERMOSTAT_OBSERVATION, this.onTemperatureObservation);
@@ -170,6 +177,8 @@ export default class TuyaProgrammeProvider {
     }
     this.manager.mq?.removeConnectionListener?.(this.onConnection);
     this.manager.mq?.removeRawMessageListener?.(this.onRawControls);
+    this.localTransport?.removeRawMessageListener(this.onLanRawControls);
+    this.localTransport?.removeConnectionListener(this.onLanConnection);
     for (const finish of [...this.targetWaits.values()]) {
       finish();
     }
@@ -303,6 +312,10 @@ export default class TuyaProgrammeProvider {
     return this.manager.devices.filter(isFastWarmThermostat);
   }
 
+  private writeMode(id: string): FastWarmProgrammeWriteMode {
+    return this.localTransport?.has(id) ? 'single-events' : this.writeModes.get(id) ?? 'single-events';
+  }
+
   private deviceId(value: unknown): string {
     if (typeof value !== 'string' || !this.devices().some(device => device.id === value)) {
       throw new Error('Choose a supported FastWarm thermostat from this instance.');
@@ -313,6 +326,12 @@ export default class TuyaProgrammeProvider {
   private requireAvailable(id: string): TuyaDevice {
     this.deviceId(id);
     const device = this.manager.getDevice(id)!;
+    if (this.localTransport?.has(id)) {
+      if (this.closed || !this.localTransport.isConnected(id)) {
+        throw new Error('The local thermostat connection is unavailable; no cloud fallback was attempted.');
+      }
+      return device;
+    }
     if (this.closed || !device.online || device.status.find(item => item.code === 'temp_unit_convert')?.value !== 'c') {
       throw new Error('The thermostat must be online and configured in Celsius.');
     }
@@ -324,23 +343,30 @@ export default class TuyaProgrammeProvider {
     const snapshot = this.snapshots.get(id);
     const settings = this.settings.get(id);
     const observation = this.manager.getTemperatureObservation?.(id);
-    const celsius = device.status.find(item => item.code === 'temp_unit_convert')?.value === 'c';
+    const local = this.localTransport?.has(id) === true;
+    const celsius = local ? observation?.source === 'lan' && (settings?.unit === 'c'
+      || (settings?.unit === undefined && device.status.find(item => item.code === 'temp_unit_convert')?.value === 'c'))
+      : device.status.find(item => item.code === 'temp_unit_convert')?.value === 'c';
+    const mode = settings?.mode ?? (local && observation?.source === 'lan'
+      ? String(device.status.find(item => item.code === 'mode')?.value ?? 'unknown') : 'unknown');
+    const grouping = settings?.grouping ?? (local && observation?.source === 'lan'
+      ? device.status.find(item => item.code === 'Event_Adaptive_Set')?.value : undefined);
     const temperature = (code: string): number | null => {
       const value = device.status.find(item => item.code === code)?.value;
       return celsius && typeof value === 'number' ? value / 10 : null;
     };
     return {
-      id, name: device.room_name ?? device.name, roomName: device.room_name, online: device.online,
+      id, name: device.room_name ?? device.name, roomName: device.room_name, online: this.isOnline(device),
       measuredC: temperature('temp_current'), targetC: celsius ? settings?.targetC ?? temperature('temp_set') : null,
       ...(celsius && settings?.targetReadAt ? {targetReadAt: settings.targetReadAt} : {}),
-      mode: settings?.mode ?? 'unknown', scheduled: settings?.mode === 'smart' && (settings.grouping & 1) === 0,
+      mode, scheduled: mode === 'smart' && typeof grouping === 'number' && (grouping & 1) === 0,
       readAt: snapshot?.finishedAt ?? observation?.receivedAt ?? Date.now(),
       temperatureReceivedAt: observation?.receivedAt, temperatureReportedAt: observation?.reportedAt,
       temperatureSource: observation?.source,
       observations: (this.observations.get(id) ?? []).map(point => ({ ...point })),
       ...(snapshot?.fingerprint ? { programme: canonical(snapshot.state), fingerprint: snapshot.fingerprint } : {}),
       writeEnabled: true, limits: { minC: 5, maxC: 40, stepC: 0.5 }, periods: { min: 4, max: 4 },
-      programmeWriteMode: this.writeModes.get(id) ?? 'single-events',
+      programmeWriteMode: this.writeMode(id),
     };
   }
 
@@ -353,6 +379,36 @@ export default class TuyaProgrammeProvider {
 
   private async readSettings(id: string): Promise<NativeSettings> {
     this.requireAvailable(id);
+    if (this.localTransport?.has(id)) {
+      const generation = this.localTransport.generation(id);
+      const response = await this.localTransport.readProperties(id,
+        ['ControlMode', 'Event_Adaptive_Set', 'SetTemp', 'TemperUnitChange', 'power1'], {timeoutMs: 10000});
+      if (this.closed || !this.localTransport.isConnected(id) || response.generation !== generation
+        || this.localTransport.generation(id) !== generation) {
+        throw new NativeSettingsChanged('The local connection changed during the native status read.');
+      }
+      // A local query emits its own accepted reports. Its coherent response, not
+      // cloud-shadow revision counters, proves the returned native snapshot.
+      const value = (code: string) => response.properties.find(item => item.code === code)?.value;
+      const mode = value('ControlMode'), grouping = value('Event_Adaptive_Set'), target = value('SetTemp');
+      const unit = value('TemperUnitChange'), power = value('power1');
+      if (!['smart', 'holiday', 'hold'].includes(String(mode)) || typeof grouping !== 'number'
+        || !Number.isInteger(grouping) || grouping < 0 || unit !== false || typeof power !== 'boolean'
+        || typeof target !== 'number' || !Number.isInteger(target) || target < 50 || target > 400
+        || !Number.isSafeInteger(response.receivedAt) || response.receivedAt > Date.now() || response.receivedAt <= 0) {
+        throw new Error('Could not read verified Celsius thermostat controls from the local connection.');
+      }
+      for (const property of response.properties) {
+        const hint = this.localControlHints.get(id)?.get(property.code);
+        if (hint && hint.receivedAt >= response.receivedAt && hint.value !== property.value) {
+          throw new NativeSettingsChanged('A newer local control report superseded the native status response.');
+        }
+      }
+      const settings: NativeSettings = {mode: mode as string, grouping, targetC: target / 10,
+        targetReadAt: response.receivedAt, unit: 'c', power};
+      this.settings.set(id, settings);
+      return settings;
+    }
     const revision = () => [this.targetRevisions.get(id) ?? 0, this.controlRevisions.get(id) ?? 0,
       this.programmeRevisions.get(id) ?? 0, this.availabilityRevisions.get(id) ?? 0, this.connectionRevision].join(':');
     const before = revision();
@@ -420,18 +476,53 @@ export default class TuyaProgrammeProvider {
 
   private onConnection = () => {
     this.connectionRevision++;
-    for (const finish of [...this.targetWaits.values()]) {
-      finish();
+    for (const [id, finish] of [...this.targetWaits.entries()]) {
+      if (!this.localTransport?.has(id)) {
+        finish();
+      }
     }
   };
 
-  private onRawControls = (_topic: string, protocol: number, message: unknown) => {
+  private connectionFor(id: string): number {
+    return this.localTransport?.has(id) ? this.localTransport.generation(id) : this.connectionRevision;
+  }
+
+  private messageConnected(id: string): boolean {
+    return this.localTransport?.has(id) ? this.localTransport.isConnected(id) : this.manager.mq?.isConnected?.() !== false;
+  }
+
+  private isOnline(device: TuyaDevice): boolean {
+    return this.localTransport?.has(device.id) ? this.localTransport.isConnected(device.id) : device.online;
+  }
+
+  private onLanConnection = (event: FastWarmLanConnectionEvent) => {
+    if (!this.localTransport?.has(event.deviceId)) {
+      return;
+    }
+    this.availabilityRevisions.set(event.deviceId, (this.availabilityRevisions.get(event.deviceId) ?? 0) + 1);
+    this.targetWaits.get(event.deviceId)?.();
+    this.schedules.invalidateAutomatic?.(event.deviceId);
+    this.onlineStates.set(event.deviceId, event.connected);
+    this.settings.delete(event.deviceId);
+    this.localControlHints.delete(event.deviceId);
+    this.targetHints.delete(event.deviceId);
+  };
+
+  private onLanRawControls = (topic: string, protocol: number, message: unknown, receivedAt: number) => {
+    this.onRawControls(topic, protocol, message, receivedAt);
+  };
+
+  private onRawControls = (_topic: string, protocol: number, message: unknown, receivedAt = Date.now()) => {
     if (protocol !== 4 || !message || typeof message !== 'object') {
       return;
     }
-    const payload = message as {devId?: unknown; status?: unknown};
+    const payload = message as {devId?: unknown; status?: unknown; source?: unknown};
     if (typeof payload.devId !== 'string' || !this.devices().some(device => device.id === payload.devId)
       || !Array.isArray(payload.status)) {
+      return;
+    }
+    const local = this.localTransport?.has(payload.devId) === true;
+    if (local !== (payload.source === 'lan')) {
       return;
     }
     for (const status of payload.status) {
@@ -447,9 +538,30 @@ export default class TuyaProgrammeProvider {
       const groupingReport = item.code === 'Event_Adaptive_Set' || dp === 110 || dp === '110'
         || Object.prototype.hasOwnProperty.call(item, '110');
       const groupingValue = Object.prototype.hasOwnProperty.call(item, '110') ? item['110'] : item.value;
-      if ((modeReport && nativeMode !== settings?.mode) || (groupingReport && groupingValue !== settings?.grouping)) {
+      const localUnit = local && (item.code === 'TemperUnitChange' || dp === 107 || dp === '107')
+        ? (item.value === false ? 'c' : item.value === true ? 'f' : undefined) : undefined;
+      const localPower = local && (item.code === 'power1' || dp === 101 || dp === '101') ? item.value : undefined;
+      if (local) {
+        const nativeCodes: Record<string, string> = {'101': 'power1', '102': 'SetTemp', '103': 'ControlMode',
+          '107': 'TemperUnitChange', '110': 'Event_Adaptive_Set'};
+        const code = typeof item.code === 'string' && Object.values(nativeCodes).includes(item.code)
+          ? item.code : nativeCodes[String(dp)];
+        if (code) {
+          const hints = this.localControlHints.get(payload.devId) ?? new Map<string, {value: unknown; receivedAt: number}>();
+          hints.set(code, {value: code === 'ControlMode' ? nativeMode : item.value, receivedAt});
+          this.localControlHints.set(payload.devId, hints);
+        }
+      }
+      if ((modeReport && nativeMode !== settings?.mode) || (groupingReport && groupingValue !== settings?.grouping)
+        || (localUnit !== undefined && localUnit !== settings?.unit)
+        || (typeof localPower === 'boolean' && localPower !== settings?.power)) {
         this.controlRevisions.set(payload.devId, (this.controlRevisions.get(payload.devId) ?? 0) + 1);
         this.targetWaits.get(payload.devId)?.();
+        if (local) {
+          // A partial push supersedes the cached proof, but cannot manufacture a new guarded settings/target read.
+          // The manager already applied this LAN report, so display falls back to its current accepted controls.
+          this.settings.delete(payload.devId);
+        }
       }
       if (item.code === 'week_program' || dp === 119 || dp === '119' || Object.prototype.hasOwnProperty.call(item, '119')) {
         try {
@@ -463,9 +575,17 @@ export default class TuyaProgrammeProvider {
         } catch { /* An unaccepted malformed packet cannot establish a new programme. */ }
       }
       const target = getFastWarmSetTemperatureReport(item);
-      if (target && (target.value / 10 !== settings?.targetC || target.time === undefined
+      const previousTarget = this.targetHints.get(payload.devId)?.targetC ?? settings?.targetC;
+      if (target && (local ? target.value / 10 !== previousTarget : target.value / 10 !== settings?.targetC || target.time === undefined
         || settings?.targetReportedAt === undefined || target.time > settings.targetReportedAt)) {
         this.targetRevisions.set(payload.devId, (this.targetRevisions.get(payload.devId) ?? 0) + 1);
+      }
+      if (local && target) {
+        this.targetHints.set(payload.devId, {targetC: target.value / 10, receivedAt});
+        this.targetWaits.get(payload.devId)?.();
+        if (settings?.targetC !== undefined && target.value / 10 !== settings.targetC) {
+          this.settings.set(payload.devId, {mode: settings.mode, grouping: settings.grouping, unit: settings.unit, power: settings.power});
+        }
       }
     }
   };
@@ -480,17 +600,20 @@ export default class TuyaProgrammeProvider {
     const failure = (status: 'conflict' | 'unconfirmed' | 'unknown', reason: string, superseded = false) => ({
       status, reason, writeAttempted, readback: this.zone(id), ...(superseded ? {superseded: true} : {}),
     });
-    const connection = this.connectionRevision, availability = this.availabilityRevisions.get(id) ?? 0;
+    const connection = this.connectionFor(id), availability = this.availabilityRevisions.get(id) ?? 0;
     const controlsRevision = this.controlRevisions.get(id) ?? 0;
     const programmeRevision = this.programmeRevisions.get(id) ?? 0;
-    const protectedStatus = () => JSON.stringify(this.manager.getDevice(id)?.status
-      .filter(item => ['mode', 'switch', 'temp_unit_convert'].includes(item.code)).map(item => [item.code, item.value]));
+    const protectedStatus = () => this.localTransport?.has(id)
+      ? JSON.stringify([this.settings.get(id)?.mode, this.settings.get(id)?.grouping,
+        this.settings.get(id)?.unit, this.settings.get(id)?.power])
+      : JSON.stringify(this.manager.getDevice(id)?.status
+        .filter(item => ['mode', 'switch', 'temp_unit_convert'].includes(item.code)).map(item => [item.code, item.value]));
     const initialStatus = protectedStatus();
     const deviceContextCurrent = () => {
-      if (this.closed || this.connectionRevision !== connection
+      if (this.closed || this.connectionFor(id) !== connection
         || (this.availabilityRevisions.get(id) ?? 0) !== availability || (this.controlRevisions.get(id) ?? 0) !== controlsRevision
         || (this.programmeRevisions.get(id) ?? 0) !== programmeRevision
-        || this.manager.mq?.isConnected?.() === false || protectedStatus() !== initialStatus) {
+        || !this.messageConnected(id) || protectedStatus() !== initialStatus) {
         return false;
       }
       try {
@@ -565,14 +688,27 @@ export default class TuyaProgrammeProvider {
       };
       writeAttempted = true;
       const targetSubmittedAt = Date.now();
-      const response = await this.manager.api.postOnce(`/v2.0/cloud/thing/${id}/shadow/properties/issue`, {
-        properties: JSON.stringify({SetTemp: Math.round(period.targetC * 10)}),
-      }, {timeoutMs: 10000, shouldProceed});
+      let accepted = true;
+      if (this.localTransport?.has(id)) {
+        try {
+          await this.localTransport.issueOnce(id, {SetTemp: Math.round(period.targetC * 10)}, {timeoutMs: 10000, shouldProceed});
+        } catch (error) {
+          if (error && typeof error === 'object' && 'writeAttempted' in error && error.writeAttempted === false) {
+            writeAttempted = false;
+          }
+          throw error;
+        }
+      } else {
+        const response = await this.manager.api.postOnce(`/v2.0/cloud/thing/${id}/shadow/properties/issue`, {
+          properties: JSON.stringify({SetTemp: Math.round(period.targetC * 10)}),
+        }, {timeoutMs: 10000, shouldProceed});
+        accepted = response.success === true;
+      }
       if (blocked) {
         writeAttempted = false;
         return failure('conflict', 'The authenticated dispatch guard stopped the target command.', !isCurrent());
       }
-      if (response.success !== true) {
+      if (!accepted) {
         return failure('unknown', 'The target command was not confirmed. Do not automatically retry.');
       }
       // A successful HTTP reply is not proof that the device adopted the target.
@@ -724,7 +860,7 @@ export default class TuyaProgrammeProvider {
     let readback: ReturnType<TuyaProgrammeProvider['zone']> | undefined;
     try {
       const result = await this.schedules.applyAutomatic!(id, {token: lease.managerToken,
-        draft: programmeToFastWarm(lease.programme), writeMode: this.writeModes.get(id) ?? 'single-events',
+        draft: programmeToFastWarm(lease.programme), writeMode: this.writeMode(id),
         isCurrent: () => !this.closed && !lease.cancelled,
         beforeApply: async (backup, planned) => {
           if (planned) {
@@ -816,7 +952,7 @@ export default class TuyaProgrammeProvider {
       writeAttempted = true;
       const result = await this.schedules.apply(id, {
         draft: programmeToFastWarm(preview.programme), expectedFingerprint: preview.fingerprint,
-        writeMode: this.writeModes.get(id) ?? 'single-events',
+        writeMode: this.writeMode(id),
         beforeWrite: async () => {
           const current = await this.readSettings(id);
           if (preview.activeTarget) {
@@ -942,14 +1078,20 @@ export default class TuyaProgrammeProvider {
   }
 
   private onTemperatureObservation = (device: TuyaDevice, observation: ThermostatTemperatureObservation) => {
+    if (this.localTransport?.has(device.id) && (observation as {source?: string})?.source !== 'lan') {
+      return;
+    }
     if (!observation || !Number.isInteger(observation.value) || observation.value < 0 || observation.value > 1130) {
       return;
     }
     this.recordObservation(device, { at: observation.receivedAt, sourceAt: observation.reportedAt,
-      currentTemperature: observation.value / 10, online: device.online, unit: this.unit(device) });
+      currentTemperature: observation.value / 10, online: this.isOnline(device), unit: this.unit(device) });
   };
 
   private onDeviceStatus = (device: TuyaDevice, statuses: TuyaDeviceStatus[]) => {
+    if (this.localTransport?.has(device.id)) {
+      return;
+    } // Native LAN reports are handled once, above.
     if (!Array.isArray(statuses) || !isFastWarmThermostat(device) || !this.devices().some(item => item.id === device.id)) {
       return;
     }
@@ -976,6 +1118,9 @@ export default class TuyaProgrammeProvider {
 
   private onDeviceInfo = (device: TuyaDevice) => {
     this.schedules.invalidateGroupCapabilities?.(device.id);
+    if (this.localTransport?.has(device.id)) {
+      return;
+    }
     if (!isFastWarmThermostat(device)) {
       return;
     }

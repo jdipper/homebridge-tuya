@@ -2,8 +2,59 @@
 
 This is [jdipper’s fork](https://github.com/jdipper/homebridge-tuya) of
 [homebridge-plugins/homebridge-tuya](https://github.com/homebridge-plugins/homebridge-tuya),
-with measured FastWarm room temperatures, a device connection for the shared
+with measured FastWarm room temperatures, optional local control, a device connection for the shared
 heating controller, and security fixes.
+
+## Optional FastWarm local control
+
+Build `2.7.3-jdipper.11` adds an opt-in LAN connection for the verified ET-63
+product using protocol **3.5**, in Celsius. It runs inside this plugin using
+Node's networking and cryptography libraries; Python and another Homebridge
+plugin are not required. The existing thermostat identities, shared programme
+editor and Home/Away/Holiday switches are retained.
+
+Add selected thermostats under **Tuya settings → Advanced Settings → FastWarm
+local connections**. For example:
+
+```json
+"fastWarmLocalDevices": [
+  {"deviceId": "your-device-id", "address": "192.168.1.50", "version": "3.5", "enabled": true}
+]
+```
+
+Import the device's 16-character local key from the Tuya plugin page, then restart
+its child bridge. Keys are stored in a separate private per-instance file,
+`persist/FastWarmLocalKeys.<instanceId>.json`; they are not placed in configuration,
+device exports, the shared editor or logs. Removing and pairing a thermostat again
+can change its key. Use a DHCP reservation to keep the configured local address
+stable.
+
+Selected devices use LAN for measured temperatures, target/power/lock control,
+native programme reads and writes, and the existing current-period target
+alignment. Native mode commands retain their existing verified enum meanings.
+Only single-event, single-day programme packets are enabled locally. The existing
+per-device spacing, conflict checks, durable backups and complete 28-period
+verification remain required. A submitted command is never replayed or switched
+to cloud delivery after an uncertain result. Status refreshes and safe reconnects
+use LAN only. Unsupported commands fail visibly.
+
+Unselected devices continue using the cloud path. A cloud group containing any
+LAN-selected device is excluded from grouped dispatch; its cloud members use
+individual requests until a compatible all-cloud group is configured. The plugin
+does not change existing group membership. Shared Apple Home controls are
+unaffected, but a mixed pilot can temporarily use more cloud requests for its
+remaining cloud devices.
+
+After a successful inventory save, a bounded cloud startup failure can restore
+the known thermostat metadata from
+`persist/FastWarmLocalMetadata.<instanceId>.json`. Cached values do not establish
+availability: the local thermostat must authenticate and report fresh status.
+Cloud-only thermostats remain unavailable during that fallback, and cached
+accessories are preserved. Initial discovery still needs the cloud once; cloud
+devices may need a bridge restart if the cloud login failed at startup. The
+thermostat's own stored schedule continues independently of Homebridge.
+
+See [local transport safeguards and validation](docs/fastwarm-local-control.md).
 
 ## Shared heating controller
 

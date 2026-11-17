@@ -438,6 +438,22 @@
                         "type": "boolean",
                         "default": false
                     },
+                    "fastWarmLocalDevices": {
+                        "title": "FastWarm local connections",
+                        "description": "Optional LAN control for verified FastWarm WiFi 2.0 thermostats. Add the device and import its private local key from the Tuya plugin page. Selected devices never fall back to cloud commands.",
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["deviceId", "address", "version"],
+                            "properties": {
+                                "deviceId": {"title": "Device ID", "type": "string"},
+                                "address": {"title": "Local IPv4 address", "type": "string"},
+                                "version": {"title": "Protocol", "type": "string", "enum": ["3.5"], "default": "3.5"},
+                                "enabled": {"title": "Use local control", "type": "boolean", "default": true}
+                            }
+                        }
+                    },
                     "fastWarmProgrammeGroups": {
                         "title": "Validated FastWarm thermostat groups",
                         "type": "array",
@@ -773,6 +789,7 @@
                 "options.generateWeatherAccessory",
                 "options.weatherAPI",
                 "options.forceIPv4",
+                "options.fastWarmLocalDevices",
                 "options.debug",
                 "options.debugLevel",
                 {

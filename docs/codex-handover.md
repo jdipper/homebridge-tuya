@@ -10,18 +10,18 @@ the shared owner.
 
 | Component | Source | Last verified installed build, 17 November |
 | --- | --- | --- |
-| Heating Programmes | `jdipper/homebridge-heating-programmes`, `main` | `0.1.0-jdipper.8` |
-| Tuya device provider | `jdipper/homebridge-tuya`, `main` ([PR #3](https://github.com/jdipper/homebridge-tuya/pull/3)) | `2.7.3-jdipper.8` |
+| Heating Programmes | `jdipper/homebridge-heating-programmes` ([PR #2](https://github.com/jdipper/homebridge-heating-programmes/pull/2)) | `0.1.0-jdipper.9` |
+| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.10` |
 | Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (unchanged) |
 
-The paired updates were merged before installation:
+The earlier household-transition updates were merged before their installation:
 
 - [Shared PR #1](https://github.com/jdipper/homebridge-heating-programmes/pull/1),
   merge `e44e043ac80a63f901591df448b638540933a897`.
 - [Tuya PR #2](https://github.com/jdipper/homebridge-tuya/pull/2),
   merge `649edd377e03ae0e55d2a50e569dbad71697a24e`.
 
-Implementation checkpoints before this handover:
+Historical transition-port checkpoints:
 - Shared: `f8dab72c2a9afc18073701c6414a29e4b3f4ee39`.
 - Tuya: `aeb9ed78e9a3f4cf2bb9667af4ec98b26dfe713e`.
 
@@ -46,6 +46,47 @@ from checked local archives. Settings, saved profiles, history and pairing data
 were backed up and preserved. The programme-delivery follow-up below supersedes
 that Tuya build; Heating Programmes and Hive remain unchanged. These local builds
 have not been published to npm.
+
+## FastWarm LAN pilot (version `.11`)
+
+`feat/fastwarm-lan-control` adds an optional transport inside the existing Tuya
+provider. The initial rollout is restricted to one thermostat. Other FastWarm
+thermostats and Hive retain their existing connections; shared controller code,
+programme policy and grouped Home/Holiday controls are unchanged.
+
+See [local control](fastwarm-local-control.md) for configuration, key storage,
+transport ownership and validation limits. The implementation uses Node's built-in
+TCP and crypto modules, with no Python or new package dependency. Exact-product
+metadata and a private protocol 3.5 key are required. Selected local devices never
+fall back to cloud writes, including when their key is absent or LAN unavailable.
+Cloud groups containing a local member are bypassed; all-cloud optimisations stay
+in place. LAN programme packets are restricted to one event and one day and retain
+the existing delivery interval and full-week verification.
+
+The Node hardware readiness check received all 28 periods, matching saved Home,
+with the existing target and Smart mode unchanged and no cloud API calls. It found
+an authenticated protocol-header difference in unsolicited reports: the version's
+12 metadata bytes can be nonzero. The parser now accepts that defined header
+shape, covered by an encrypted peer regression. Authentication is still required.
+The controlled Node write test also passed: a future Sunday Leave period was
+raised by 0.5°C, all 28 periods were checked, then the exact original week was
+restored and checked. The current target, Smart mode and protected settings stayed
+unchanged. Exactly two programme commands were dispatched, without replay or
+cloud API calls. A first test preflight stopped before any mutation because it
+required optional unsupported DPs; the corrected helper records only supported
+optional fields while requiring all essential controls. Its 30 offline safety
+tests and the static installer/verifier's 61 tests pass.
+
+The complete offline suite passes **816 tests in 44 suites**; build and lint pass.
+The two suites requiring real cloud-account configuration are excluded.
+
+Private local keys and vetted startup metadata live in separate owned mode-0600
+files scoped to the existing provider instance. Normal configuration contains no
+key. The plugin UI can import keys without returning them. A cloud startup failure
+can use previously vetted metadata and fresh authenticated LAN observations;
+non-local devices remain offline in that case. Physical WAN-disconnect startup
+and broad multi-period LAN delivery remain untested. The first metadata seed must
+come from a previously established exact-product discovery, not a guessed device.
 
 ## Programme delivery follow-up (installed and hardware checked)
 
@@ -86,6 +127,72 @@ This is bounded evidence for the installed build, tested devices and packet
 pattern. It does not establish the exact earlier failure cause or guarantee
 other firmware, network outages or every possible programme. Full native
 readback and visible failure handling remain required.
+
+## Active-target follow-up (installed and hardware checked)
+
+The current paired contract is Heating Programmes `0.1.0-jdipper.9` and Tuya
+`2.7.3-jdipper.10`, tracked by [Shared PR #2](https://github.com/jdipper/homebridge-heating-programmes/pull/2)
+and [Tuya PR #4](https://github.com/jdipper/homebridge-tuya/pull/4). Checked local
+archives were installed with backups; no npm publication was performed. Runtime
+source checkpoints are Shared `80671d931c7c28b36ac9b0395e7cdc69f9a86196`
+and Tuya `dfbed06ac894dd11c5a73d5be7f99eceaa799987`. Later handover/README-only
+commits do not replace those immutable archives or alter installed runtime code.
+
+The earlier week-storage fixes alone did not activate the new programme's current
+temperature: all six FastWarm weeks matched Holiday while native targets retained
+Home values. A clock-confirmed pilot then adopted an explicit 0.5°C Smart target
+reduction, and its next native event restored the scheduled target without another
+temperature command. Its original full week and target were restored and verified.
+This establishes natural-event hand-back on the tested device while connected;
+it does not constitute a WAN-disconnection or universal firmware test.
+
+Shared now supplies the room's validated IANA time zone for both reviewed and
+automatic Tuya applications. The provider verifies the full week and Scheduled
+controls, aligns a differing current target with one native `SetTemp` command,
+and requires a fresh native shadow target match. It retains Smart mode and the
+uploaded native schedule. Hold/Smart cycles, power changes, native Holiday,
+boosts and future execution jobs are not introduced. Time-zone edits invalidate
+reviewed work; dispatch guards cover newer intent, native edits, connection and
+availability changes, and period boundaries. Read-only profile verification also
+requires fresh active-target proof. An explicit review can confirm current state
+without relabelling a historical unknown operation as successful.
+
+The first `.9` paired test adopted the correct targets on all six devices, but
+five native reports arrived just after its three short read checks. Those results
+remained unknown and were never replayed. Home was restored and independently
+read-verified. Tuya `.10` waits locally for an accepted native target report for
+up to ten seconds, then uses a fresh shadow GET as proof. At most three read-only
+checks remain; a stale shadow cannot overwrite a newer accepted target report.
+
+The final installed Holiday → Home test passed on all seven thermostats:
+**28 periods per thermostat in each direction, 392 period comparisons**, with all
+current targets matching each programme's active period. All 12 FastWarm automatic
+operations confirmed. Final Home, zero programme warnings, saved drafts, household
+policy, grouped control identities/names and pairing data were verified. Hive's
+provider and process remained unchanged. All six FastWarm physical clocks and
+weekdays were user-confirmed for the test; clock metadata was updated separately.
+
+The `.9` pair required only Tuya and Shared child restarts. The `.10` follow-up
+restarted only Tuya, preserving the running Shared and Hive processes. Both
+static verifiers sent no thermostat commands. Initial probe/readiness checks and
+the `.9` timing failures are retained in private evidence; none is represented
+as an unqualified pass.
+
+Programme grouping, the capability cache and the `.8` per-device packet spacing
+are unchanged. Native `SetTemp` shares the existing control GETs. A matching
+target adds no command or read; a differing target normally adds one individual
+command and one proof GET. MQTT-informed waiting avoids predictable stale reads;
+there is no new temperature polling between profile changes. Base request counts
+below describe programme storage and must include this conditional target cost
+when budgeting profile switches.
+
+Current validation: **590 Tuya tests in 36 suites**, including local sockets and
+all group/request-count regressions; **289 Shared tests**, including 21 new
+contract/freshness/time-zone cases. Build and standard/explicit nested lint pass.
+Paired and single-provider static installer/verifier suites pass **40** and **50**
+tests. The Shared full suite used its existing frozen legacy validator through a
+temporary workspace alias, removed afterward; it added no published runtime data.
+See [active-target behaviour and evidence](fastwarm-active-target.md).
 
 ## Existing architecture and ownership
 
@@ -192,6 +299,7 @@ In `homebridge-heating-programmes`:
 In `homebridge-tuya`:
 - `src/device/schedule/TuyaProgrammeProvider.ts`,
   `TuyaProgrammeProviderServer.ts`: owned automatic leases and cancellation IPC.
+- `src/device/schedule/FastWarmActiveTarget.ts`: time-zone/current-period calculation.
 - `src/device/schedule/FastWarmScheduleManager.ts`: native command boundaries,
   fresh baselines and full-week verification.
 - Existing `FastWarmGroupCommandBroker.ts` and `TuyaOpenAPI.ts` dispatch guards
@@ -205,9 +313,10 @@ all six group members and verified exact restoration. Six-byte event writes and
 complete individual weekly readbacks are validated. A 21-byte full-day report
 alone is not proof that the corresponding full-day write is supported.
 
-The reported mixed Monday programme and Holiday restoration fault have simulated
-regressions; this port has not established their exact physical cause or proved
-the fix on hardware. Do not present them as live-resolved.
+The historical mixed-Monday incident retains simulated regressions; its exact
+physical cause is not established. The installed Holiday/Home round trip now has
+the bounded full-week and active-target hardware evidence above. Do not generalise
+that result to every firmware, DST boundary or WAN outage.
 
 Do not enable temporary boosts/setbacks: the original combined Hold command failed
 and later online sequence/timer results do not establish reliable restoration
@@ -215,26 +324,25 @@ across a changing native programme boundary. Keep the historical boundary jobs
 and evidence frozen; do not rearm or reschedule them as part of this port.
 
 WAN-independent execution of an uploaded week, thermostat clock retention/DST,
-and local LAN programme compatibility remain distinct hardware checks. The linked
-tuya-local exact-product report and TinyTuya/TuyAPI documentation in the original
-handover justify investigation, not a compatibility claim. No LAN provider has
-been added and no automatic cloud fallback is introduced.
+remain distinct hardware checks. The bounded LAN evidence and optional transport
+are described above; it does not establish universal firmware compatibility or
+WAN-independent startup. No automatic cloud fallback is introduced.
 
 ## Validation and deployment safeguards
 
-- Shared: `npm test` builds the plugin and passes all **268** offline tests,
+- Shared: `npm test` builds the plugin and passes all **289** offline tests,
   including the Unix-socket transport, editor relay and owner-lock suites.
-- Tuya: `npm run lint` and `npm run build` pass. The command below passes **539**
-  tests in **34** suites. Only the two real-account suites are excluded; local
+- Tuya: `npm run lint` and `npm run build` pass. The command below passes **590**
+  tests in **36** suites. Only the two real-account suites are excluded; local
   socket integration suites are included and pass.
 
   ```sh
   npm test -- --runInBand --watchman=false --testPathIgnorePatterns test/home.test.ts test/custom.test.ts
   ```
 
-- The static installer/verifier passes **39 tests** and the guarded hardware-test
-  helper passes **15 offline tests**. These helper tests do not establish a live
-  timing guarantee.
+- The active-target paired and single-provider installers/verifiers pass **40**
+  and **50** tests. The earlier future-Sunday helper retains **15** offline tests.
+  These helper tests do not establish a universal hardware timing guarantee.
 - Regression coverage includes both providers, failed Holiday then newer Home,
   unknown occupancy, Home/Away/Home cancellation, cancellation arriving before
   apply, interrupted restart restoration, stale/manual confirmation, grouped
@@ -260,8 +368,8 @@ No rollback should invent a countdown, replay an interrupted upload or overwrite
 a newer programme without review.
 
 Read-only startup and both providers/controls were verified for this installation,
-followed by complete native-week checks and the bounded future-period hardware
-test above. Future live tests still require confirmed physical clocks/weekdays,
+followed by complete native-week checks, the bounded future-period test, native
+event hand-back and the full active-target Holiday/Home round trip above. Future live tests still require confirmed physical clocks/weekdays,
 fresh baseline evidence and a controlled plan with verified restoration. Do not
 infer universal hardware correctness from the offline suite, a cloud
 acknowledgement or this one test. Unknown writes require review; no automatic

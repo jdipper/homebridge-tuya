@@ -1,5 +1,6 @@
 import { PlatformConfig } from 'homebridge';
 import { TuyaDeviceSchemaProperty, TuyaDeviceSchemaType } from './device/TuyaDevice';
+import type { FastWarmLocalDeviceConfig } from './device/lan/FastWarmLanConfiguration';
 
 export interface TuyaPlatformDeviceSchemaConfig {
   code: string;
@@ -43,6 +44,7 @@ export interface FastWarmProgrammeGroupConfig {
 }
 
 export interface TuyaPlatformCustomConfigOptions {
+  fastWarmLocalDevices?: FastWarmLocalDeviceConfig[];
   projectType: '1';
   endpoint: string;
   accessId: string;
@@ -63,6 +65,7 @@ export interface TuyaPlatformCustomConfigOptions {
 }
 
 export interface TuyaPlatformHomeConfigOptions {
+  fastWarmLocalDevices?: FastWarmLocalDeviceConfig[];
   projectType: '2';
   endpoint?: string;
   accessId: string;

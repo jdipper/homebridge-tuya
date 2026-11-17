@@ -38,15 +38,14 @@ Heating Programmes and Hive builds remain unchanged at `0.1.0-jdipper.8` and
 `1.1.0-jdipper.4`. Only the Tuya child bridge was restarted. Configuration, saved
 profiles, historical programme versions, pairing identities and grouped controls
 were preserved. Fresh read-only checks established complete 28-period weeks for
-all six FastWarm thermostats with zero programme warnings. These checks confirm
-stored programmes and do not demonstrate the pacing change on hardware.
+all six FastWarm thermostats with zero programme warnings. A subsequent
+controlled hardware test exercised the pacing change as described below.
 
 The immutable installed archive was built from commit
 `bf14951529230c0cf84661fe91b8c209a5ab420a`. Subsequent handover edits are
 documentation only; they do not replace that archive or add runtime code or
-dependencies. Source branch `fix/fastwarm-programme-delivery` remains in
-[draft PR #3](https://github.com/jdipper/homebridge-tuya/pull/3) pending controlled
-hardware validation.
+dependencies. [PR #3](https://github.com/jdipper/homebridge-tuya/pull/3) records
+the delivery change for this fork's `main` branch.
 
 The complete offline Tuya suite passes **539 tests in 34 suites**, including
 **12 delivery-pacing regressions**. Only the two real-account suites are excluded;
@@ -62,17 +61,26 @@ that all intended events are stored when pacing is enabled, with the same cloud
 request count and no replay. Separate tests cover the first-packet path,
 per-device independence, monotonic timing and stopping unsent commands.
 
-Hardware validation of the delivery interval is still pending. A prepared
-future-period test stopped at preflight because the physical thermostat clock
-and weekday had not been confirmed. That confirmation remains pending. No test
-programme writes were sent.
+## Controlled hardware evidence
 
-A controlled test should change several future periods on an affected thermostat,
-verify all 28 periods, restore the original week using a fresh conflict-checked
-baseline and verify restoration. Saved household drafts and current-day temperatures should be kept
-unchanged. The test needs explicit approval for its specified writes. A no-change
-Home selection does not exercise multi-packet delivery.
+A controlled test passed on two thermostats after physical clock and weekday
+confirmation. All four targets for a future Sunday were increased by 0.5°C while
+the change times were retained. Both complete 28-period weeks were verified.
+The original weeks were then restored from fresh conflict-checked baselines,
+and all 28 periods were verified on both thermostats again. All four
+write/restoration phases confirmed successfully, with no failed-phase replay
+and no manual corrections. The observed programme-command attempt count matched
+the planned 16 packets: four periods, two phases and two thermostats. Other read
+and authentication requests are separate. Saved household drafts and current-day
+programme periods were preserved.
+
+This demonstrates multi-packet delivery and exact restoration for the installed
+build, tested devices and packet pattern. It does not prove the exact cause of
+the earlier dropped period or guarantee every firmware, network condition or
+outage scenario. A future test still needs explicit authorisation, confirmed
+physical clocks/weekdays, fresh baselines, future-only changes and verified
+restoration. A no-change selection does not exercise multi-packet delivery.
 
 An acknowledged command can still fail to reach a device. A future mismatch must
-remain visible and require review; pacing is not grounds for claiming hardware
-success or silently retrying an uncertain outcome.
+remain visible and require review; pacing is not grounds for claiming success
+without complete native readback or silently retrying an uncertain outcome.

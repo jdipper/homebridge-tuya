@@ -11,7 +11,7 @@ the shared owner.
 | Component | Source | Last verified installed build, 17 November |
 | --- | --- | --- |
 | Heating Programmes | `jdipper/homebridge-heating-programmes`, `main` | `0.1.0-jdipper.8` |
-| Tuya device provider | `jdipper/homebridge-tuya`, `fix/fastwarm-programme-delivery` ([draft PR #3](https://github.com/jdipper/homebridge-tuya/pull/3)) | `2.7.3-jdipper.8` |
+| Tuya device provider | `jdipper/homebridge-tuya`, `main` ([PR #3](https://github.com/jdipper/homebridge-tuya/pull/3)) | `2.7.3-jdipper.8` |
 | Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (unchanged) |
 
 The paired updates were merged before installation:
@@ -47,23 +47,23 @@ were backed up and preserved. The programme-delivery follow-up below supersedes
 that Tuya build; Heating Programmes and Hive remain unchanged. These local builds
 have not been published to npm.
 
-## Programme delivery follow-up (installed; hardware validation pending)
+## Programme delivery follow-up (installed and hardware checked)
 
-Tuya `2.7.3-jdipper.8` on `fix/fastwarm-programme-delivery` adds per-device spacing
-between consecutive native programme packets after an observed middle-period
-write was acknowledged but absent from complete readbacks. It is installed and
-passed static verification. Only the Tuya child bridge was restarted; the shared
+Tuya `2.7.3-jdipper.8` ([PR #3](https://github.com/jdipper/homebridge-tuya/pull/3))
+adds per-device spacing between consecutive native programme packets after an
+observed middle-period write was acknowledged but absent from complete readbacks.
+It is installed and passed static verification. Only the Tuya child bridge was restarted; the shared
 controller and Hive processes, grouped controls, pairing identities,
 configuration, saved profiles and historical programme versions were preserved.
 Fresh read-only checks established complete 28-period weeks for all six FastWarm
-thermostats with zero programme warnings. Those reads confirm stored programmes;
-they do not exercise the new multi-packet delivery interval.
+thermostats with zero programme warnings. The controlled hardware test described
+below then exercised the multi-packet delivery interval.
 
 The installed archive was built from
 `bf14951529230c0cf84661fe91b8c209a5ab420a`. It remains immutable. Subsequent edits
 to these handover documents do not replace that archive or change its runtime
 code or dependencies. [PR #3](https://github.com/jdipper/homebridge-tuya/pull/3)
-remains a draft until controlled hardware validation is complete.
+records the change for this fork's `main` branch.
 
 See [delivery behaviour and validation limits](fastwarm-programme-delivery.md)
 for the regression, timing policy and guarded hardware test. The build passes
@@ -73,10 +73,19 @@ Build, standard lint and explicit schedule-manager lint pass. The static
 installer/verifier passes **39 tests**; the guarded hardware-test helper passes
 **15 offline tests**.
 
-The future-period hardware test has not run. Its preflight stopped because the
-physical thermostat clock and weekday had not been confirmed. That confirmation
-is pending; no test programme writes were sent. A new test plan must keep its
-future-only condition and verified restoration safeguards.
+A controlled test passed on two thermostats after their physical clocks and
+weekdays were confirmed. It increased each of a future Sunday's four period
+targets by 0.5°C, retaining their change times. Each complete 28-period week was
+verified, then the original week was restored using a fresh conflict-checked
+baseline and all 28 periods were verified again. All four test/restoration phases
+confirmed successfully, with no failed-phase replay or manual corrections.
+The observed programme-command attempt count matched the planned 16 packets.
+Saved household drafts and current-day programme periods were preserved.
+
+This is bounded evidence for the installed build, tested devices and packet
+pattern. It does not establish the exact earlier failure cause or guarantee
+other firmware, network outages or every possible programme. Full native
+readback and visible failure handling remain required.
 
 ## Existing architecture and ownership
 
@@ -250,9 +259,10 @@ pre-upgrade `HeatingProgrammes.json` backup because `.7` requires those fields.
 No rollback should invent a countdown, replay an interrupted upload or overwrite
 a newer programme without review.
 
-Read-only startup and both providers/controls were verified for this installation;
-complete native weeks were then checked without programme writes. A live
-multi-packet delivery test still needs confirmed physical clocks/weekdays, fresh
-baseline evidence and a specific controlled plan. Do not infer hardware
-correctness from the offline suite or an HTTP acknowledgement. Unknown writes
-require review; no automatic replay.
+Read-only startup and both providers/controls were verified for this installation,
+followed by complete native-week checks and the bounded future-period hardware
+test above. Future live tests still require confirmed physical clocks/weekdays,
+fresh baseline evidence and a controlled plan with verified restoration. Do not
+infer universal hardware correctness from the offline suite, a cloud
+acknowledgement or this one test. Unknown writes require review; no automatic
+replay.

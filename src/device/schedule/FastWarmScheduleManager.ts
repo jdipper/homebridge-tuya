@@ -42,6 +42,8 @@ export interface FastWarmScheduleManagerOptions {
   freshnessToleranceMs?: number;
   verificationAttempts?: number;
   verificationDelayMs?: number;
+  /** Quiet time after a programme packet's HTTP acknowledgement, before the next packet for that thermostat. */
+  writeIntervalMs?: number;
 }
 
 /** Packet shapes are opt-in per thermostat after independent hardware validation. */
@@ -211,6 +213,9 @@ export default class FastWarmScheduleManager {
   private verificationAttempts: number;
   private verificationDelayMs: number;
   private verificationDelays = new Set<() => void>();
+  private writeIntervalMs: number;
+  private writeAcknowledgedAt = new Map<string, number>();
+  private writeDelays = new Map<string, () => void>();
   private readonly groups: FastWarmGroupCommandBroker;
 
   constructor(
@@ -224,6 +229,7 @@ export default class FastWarmScheduleManager {
     this.freshnessToleranceMs = options.freshnessToleranceMs ?? 2000;
     this.verificationAttempts = options.verificationAttempts ?? 3;
     this.verificationDelayMs = options.verificationDelayMs ?? 1000;
+    this.writeIntervalMs = options.writeIntervalMs ?? 1000;
     this.groups = new FastWarmGroupCommandBroker(api, options.programmeGroups, this.commandTimeoutMs);
     if (![this.readTimeoutMs, this.commandTimeoutMs].every(value => Number.isSafeInteger(value) && value > 0)
       || !Number.isSafeInteger(this.freshnessToleranceMs) || this.freshnessToleranceMs < 0) {
@@ -232,6 +238,9 @@ export default class FastWarmScheduleManager {
     if (!Number.isSafeInteger(this.verificationAttempts) || this.verificationAttempts < 1 || this.verificationAttempts > 3
       || !Number.isSafeInteger(this.verificationDelayMs) || this.verificationDelayMs < 0 || this.verificationDelayMs > 60000) {
       throw new Error('Schedule verification requires 1 to 3 attempts and a delay from 0 to 60000 milliseconds.');
+    }
+    if (!Number.isSafeInteger(this.writeIntervalMs) || this.writeIntervalMs < 0 || this.writeIntervalMs > 60000) {
+      throw new Error('Schedule write interval must be from 0 to 60000 milliseconds.');
     }
     this.mq.addRawMessageListener(this.onRawReport);
     this.mq.addConnectionListener(this.onConnection);
@@ -356,14 +365,22 @@ export default class FastWarmScheduleManager {
 
   invalidateAutomatic(deviceId: string): void {
     this.availabilityRevisions.set(deviceId, (this.availabilityRevisions.get(deviceId) ?? 0) + 1);
+    this.writeDelays.get(deviceId)?.();
     this.groups.invalidateCapabilities(deviceId);
   }
 
-  invalidateGroupCapabilities(deviceId: string): void {this.groups.invalidateCapabilities(deviceId);}
+  invalidateGroupCapabilities(deviceId: string): void {
+    this.groups.invalidateCapabilities(deviceId);
+  }
 
   private onConnection = (event?: TuyaMQConnectionEvent) => {
     this.connectionRevision++;
-    if (!event || !event.connected || event.recoveryRequired) this.groups.invalidateCapabilities();
+    for (const finish of [...this.writeDelays.values()]) {
+      finish();
+    }
+    if (!event || !event.connected || event.recoveryRequired) {
+      this.groups.invalidateCapabilities();
+    }
   };
 
   private async applyFromBackup(deviceId: string, draft: FastWarmScheduleState, backup: FastWarmScheduleSnapshot,
@@ -378,14 +395,33 @@ export default class FastWarmScheduleManager {
       return { status: 'conflict', backup, planned: 0, applied: 0, error: 'The thermostat schedule changed. Refresh before applying.' };
     }
     const commands = planFastWarmScheduleWrites(backup.state, draft, writeMode);
+    const connectionRevision = this.connectionRevision;
+    const availabilityRevision = this.availabilityRevisions.get(deviceId) ?? 0;
+    const writeContextCurrent = () => !this.closed && connectionRevision === this.connectionRevision
+      && availabilityRevision === (this.availabilityRevisions.get(deviceId) ?? 0);
     if (commands.length === 0 && !guardNoChanges) {
       return { status: 'no_changes', backup, planned: 0, applied: 0 };
     }
 
     try {
-      if (isCurrent?.() === false) throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
+      if (isCurrent?.() === false) {
+        throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
+      }
+      if (commands.length > 0) {
+        // Keep any cross-operation cooldown ahead of the final fresh-control guard.
+        await this.waitForWriteInterval(deviceId);
+        this.requireDevice(deviceId);
+        if (!writeContextCurrent()) {
+          throw new ScheduleCommandNotSent('The thermostat or message connection changed before upload; no schedule was sent.');
+        }
+        if (isCurrent?.() === false) {
+          throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
+        }
+      }
       await beforeWrite?.(backup, commands.length);
-      if (isCurrent?.() === false) throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
+      if (isCurrent?.() === false) {
+        throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
+      }
     } catch (error) {
       return { status: 'conflict', backup, planned: commands.length, applied: 0,
         error: errorText(error), unknownOutcome: false,
@@ -402,12 +438,31 @@ export default class FastWarmScheduleManager {
     for (const command of commands) {
       let submitted = false;
       try {
+        if (applied > 0) {
+          await this.waitForWriteInterval(deviceId);
+        }
         this.requireDevice(deviceId);
-        if (isCurrent?.() === false) throw new FastWarmSelectionSuperseded('The automatic selection was superseded; remaining commands were not sent.');
+        if (!writeContextCurrent()) {
+          throw new ScheduleCommandNotSent('The thermostat or message connection changed; remaining schedule commands were not sent.');
+        }
+        if (isCurrent?.() === false) {
+          throw new FastWarmSelectionSuperseded('The automatic selection was superseded; remaining commands were not sent.');
+        }
         submitted = true;
-        const shouldProceed = () => isCurrent?.() !== false && (applied !== 0 || beforeFirstDispatch?.() !== false);
-        await this.issue(deviceId, { week_program: command.payload }, isCurrent || (applied === 0 && beforeFirstDispatch) ? shouldProceed : undefined,
+        const shouldProceed = () => {
+          if (!writeContextCurrent() || isCurrent?.() === false || (applied === 0 && beforeFirstDispatch?.() === false)) {
+            return false;
+          }
+          try {
+            this.requireDevice(deviceId);
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        await this.issue(deviceId, { week_program: command.payload }, shouldProceed,
           allowGroup && commands.length === 1);
+        this.writeAcknowledgedAt.set(deviceId, performance.now());
         applied++;
       } catch (error) {
         writeError = errorText(error);
@@ -476,6 +531,31 @@ export default class FastWarmScheduleManager {
     for (const finish of [...this.verificationDelays]) {
       finish();
     }
+    for (const finish of [...this.writeDelays.values()]) {
+      finish();
+    }
+    this.writeAcknowledgedAt.clear();
+  }
+
+  private waitForWriteInterval(deviceId: string): Promise<void> {
+    this.requireDevice(deviceId);
+    const acknowledgedAt = this.writeAcknowledgedAt.get(deviceId);
+    const remaining = acknowledgedAt === undefined ? 0 : Math.ceil(acknowledgedAt + this.writeIntervalMs - performance.now());
+    if (remaining <= 0) {
+      return Promise.resolve();
+    }
+    // HTTP acceptance can precede the thermostat applying a packet. Give each
+    // device a quiet interval instead of sending its next period immediately.
+    // This is a delivery mitigation; only the complete native readback confirms it.
+    return new Promise(resolve => {
+      const finish = () => {
+        clearTimeout(timer);
+        this.writeDelays.delete(deviceId);
+        resolve();
+      };
+      const timer = setTimeout(finish, remaining);
+      this.writeDelays.set(deviceId, finish);
+    });
   }
 
   private waitForVerification(deviceId: string): Promise<void> {
@@ -536,12 +616,16 @@ export default class FastWarmScheduleManager {
     }
     let blocked = false;
     const dispatchGuard = shouldProceed && (() => {
-      const allowed = shouldProceed(); if (!allowed) blocked = true; return allowed;
+      const allowed = shouldProceed(); if (!allowed) {
+        blocked = true;
+      } return allowed;
     });
     const response = await this.api.postOnce(`/v2.0/cloud/thing/${deviceId}/shadow/properties/issue`, {
       properties: JSON.stringify(properties),
     }, { timeoutMs: this.commandTimeoutMs, ...(dispatchGuard === undefined ? {} : { shouldProceed: dispatchGuard }) });
-    if (blocked) throw new ScheduleCommandNotSent('The local command guard stopped transmission.');
+    if (blocked) {
+      throw new ScheduleCommandNotSent('The local command guard stopped transmission.');
+    }
     if (response.success !== true) {
       throw new ScheduleCommandRejected(`${response.code}: ${response.msg}`);
     }
@@ -575,7 +659,8 @@ export default class FastWarmScheduleManager {
       const timer = setTimeout(() => session.finish(true), this.readTimeoutMs);
       this.sessions.set(deviceId, session);
       // The listener and session are present before requesting the programme.
-      void this.issue(deviceId, { inquire: true }, allowGroup ? () => this.sessions.get(deviceId) === session : undefined, allowGroup).then(() => {
+      void this.issue(deviceId, { inquire: true },
+        allowGroup ? () => this.sessions.get(deviceId) === session : undefined, allowGroup).then(() => {
         session.acknowledged = true;
         if (collectFastWarmSchedule(session.reports).complete) {
           session.finish(false);

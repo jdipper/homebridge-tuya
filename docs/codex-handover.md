@@ -56,6 +56,20 @@ retained. Six FastWarm current-week snapshots await a fresh read after restart;
 immutable historical versions remain preserved. No live programme-switch test,
 network-isolation test or timer test was performed for this deployment.
 
+## Programme delivery follow-up (candidate)
+
+Tuya `2.7.3-jdipper.8` on `fix/fastwarm-programme-delivery` adds per-device spacing
+between consecutive native programme packets after an observed middle-period
+write was acknowledged but absent from complete readbacks. The earlier
+installation table remains the deployed baseline until the new build is installed
+and verified. Shared and Hive do not need code changes for this follow-up.
+See [delivery behaviour and validation limits](fastwarm-programme-delivery.md) for
+the regression, timing policy and controlled hardware validation plan. This
+candidate passes **539 offline tests in 34 suites**, including the local socket
+integration tests and 12 new pacing tests. The previous implementation fails the
+new core regression. Build, standard lint and explicit schedule-manager lint pass.
+Hardware validation and installation are still pending.
+
 ## Existing architecture and ownership
 
 - Tuya owns authentication, device connections, measured temperatures, room

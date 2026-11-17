@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.7.3-jdipper.8] - (2026.11.17)
+
+### Fixed
+- Pace consecutive native FastWarm programme packets per thermostat after cloud acknowledgement, preserving packet grouping and full-week readback without adding cloud requests or automatically replaying uncertain writes. See [delivery behaviour and validation limits](docs/fastwarm-programme-delivery.md).
+
 ## [2.7.2-jdipper.2] - (2026.11.08)
 
 ### Changed

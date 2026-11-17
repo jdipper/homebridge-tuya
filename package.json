@@ -1,8 +1,8 @@
 {
   "name": "@jdipper/homebridge-tuya",
   "displayName": "Homebridge Tuya (jdipper FastWarm)",
-  "version": "2.7.2-jdipper.2",
-  "description": "jdipper's Homebridge Tuya fork with FastWarm room temperatures, household programmes and security fixes.",
+  "version": "2.7.3-jdipper.6",
+  "description": "jdipper's Homebridge Tuya fork with FastWarm room temperatures, a shared-controller device connection and security fixes.",
   "license": "MIT",
   "repository": {
     "type": "git",

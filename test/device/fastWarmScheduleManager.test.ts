@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globa
 import TuyaOpenAPI from '../../src/core/TuyaOpenAPI';
 import TuyaOpenMQ from '../../src/core/TuyaOpenMQ';
 import TuyaDevice from '../../src/device/TuyaDevice';
-import FastWarmScheduleManager from '../../src/device/schedule/FastWarmScheduleManager';
+import FastWarmScheduleManager, { planFastWarmScheduleWrites } from '../../src/device/schedule/FastWarmScheduleManager';
 import {
   collectFastWarmSchedule, decodeFastWarmSchedule, encodeFastWarmSchedule, FASTWARM_SCHEDULE_DAYS, FastWarmScheduleState,
 } from '../../src/device/schedule/FastWarmSchedule';
@@ -62,8 +62,9 @@ describe('FastWarm programme transport', () => {
       }
       if (properties.week_program) {
         const packet = decodeFastWarmSchedule(properties.week_program);
-        const day = stored.days.find(item => item.day === packet.dayMask)!;
-        day.events[packet.events[0].event] = { ...packet.events[0] };
+        for (const day of stored.days.filter(item => item.day & packet.dayMask)) {
+          for (const event of packet.events) { day.events[event.event] = { ...event }; }
+        }
       }
       return success();
     });
@@ -73,6 +74,11 @@ describe('FastWarm programme transport', () => {
     manager.close();
     jest.restoreAllMocks();
     jest.useRealTimers();
+  });
+
+  test('invalid packet modes are rejected before any cloud request', async () => {
+    await expect(manager.apply(device.id, { draft: week(), expectedFingerprint: '0'.repeat(64), writeMode: 'unknown' as never })).rejects.toThrow('validated');
+    expect(post).not.toHaveBeenCalled();
   });
 
   test('is passive until asked and subscribes before sending the inquiry', async () => {
@@ -182,6 +188,41 @@ describe('FastWarm programme transport', () => {
     expect(snapshot.state.complete).toBe(true);
     expect(snapshot.fingerprint).toBeNull();
     expect(snapshot.errors[0]).toContain('rejected');
+  });
+
+  test('an explicitly selected grouped-day packet updates all intended periods once and verifies the full week', async () => {
+    const baseline = await manager.read(device.id);
+    const events = baseline.state.days[0].events.map(event => ({ ...event, temperature: event.temperature + 1 }));
+    const draft = collectFastWarmSchedule([{ packet: { dayMask: 127, events } }]);
+    const guard = jest.fn(async () => { expect(scheduleWrites()).toHaveLength(0); expect(propertiesSent()).toHaveLength(2); });
+    const result = await manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint!, writeMode: 'grouped-days', beforeWrite: guard });
+    expect(guard).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status: 'verified', planned: 1, applied: 1, verificationReads: 1 });
+    expect(result.readback!.state).toEqual(draft);
+    expect(scheduleWrites()).toHaveLength(1);
+    expect(decodeFastWarmSchedule(scheduleWrites()[0].week_program)).toEqual({ dayMask: 127, events });
+    expect(post).toHaveBeenCalledTimes(4); // initial inquiry, fresh backup, one upload, one full-week readback.
+  });
+
+  test('a failed fresh control guard prevents every grouped write', async () => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state)); draft.days[5].events[0].temperature = 30;
+    const result = await manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint!, writeMode: 'whole-days',
+      beforeWrite: async () => { throw new Error('Control mode changed during backup'); } });
+    expect(result).toMatchObject({ status: 'conflict', applied: 0, unknownOutcome: false });
+    expect(scheduleWrites()).toHaveLength(0);
+  });
+
+  test('an acknowledged but ignored grouped write is never retried or replaced by individual writes', async () => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state)); draft.days[5].events[0].temperature = 30;
+    post.mockImplementation(async (_path, body) => { if (JSON.parse(body.properties).inquire) { await emitWeek(); } return success(); });
+    const pending = manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint!, writeMode: 'whole-days' });
+    await jest.advanceTimersByTimeAsync(2500);
+    const result = await pending;
+    expect(result).toMatchObject({ status: 'unverified', applied: 1, planned: 1, verificationReads: 3, unknownOutcome: true });
+    expect(scheduleWrites()).toHaveLength(1);
+    expect(Buffer.from(scheduleWrites()[0].week_program, 'base64')).toHaveLength(21);
   });
 
   test('applies only changed six-byte events and verifies the whole week without changing mode/power/settings', async () => {
@@ -459,5 +500,47 @@ describe('FastWarm programme transport', () => {
     manager.close();
     expect((await pending).errors).toEqual(['Schedule manager closed.']);
     await expect(manager.read(device.id)).rejects.toThrow('closed');
+  });
+});
+
+describe('FastWarm grouped packet planning', () => {
+  test('groups identical changed single events across all days without overwriting other periods', () => {
+    const before = week(), draft = JSON.parse(JSON.stringify(before));
+    draft.days.forEach((day: FastWarmScheduleState['days'][number]) => { day.events[0].temperature = 30; });
+    const packets = planFastWarmScheduleWrites(before, draft, 'grouped-events');
+    expect(packets).toHaveLength(1);
+    expect(decodeFastWarmSchedule(packets[0].payload)).toEqual({ dayMask: 127, events: [draft.days[0].events[0]] });
+    expect(Buffer.from(packets[0].payload, 'base64')).toHaveLength(6);
+  });
+  test('whole-day mode sends four valid periods only for changed days', () => {
+    const before = week(), draft = JSON.parse(JSON.stringify(before)); draft.days[5].events[0].temperature = 30;
+    const packets = planFastWarmScheduleWrites(before, draft, 'whole-days');
+    expect(packets).toHaveLength(1); expect(packets[0].dayMask).toBe(32);
+    expect(decodeFastWarmSchedule(packets[0].payload).events).toEqual(draft.days[5].events);
+    expect(Buffer.from(packets[0].payload, 'base64')).toHaveLength(21);
+  });
+  test('groups only identical complete desired days and leaves unchanged days untouched', () => {
+    const before = week(), draft = JSON.parse(JSON.stringify(before));
+    draft.days[5].events = draft.days[6].events.map((event: FastWarmScheduleState['days'][number]['events'][number]) => ({ ...event, temperature: 30 }));
+    draft.days[6].events = structuredClone(draft.days[5].events);
+    const packets = planFastWarmScheduleWrites(before, draft, 'grouped-days');
+    expect(packets).toHaveLength(1); expect(packets[0].dayMask).toBe(96); expect(packets[0].events).toHaveLength(4);
+    expect(decodeFastWarmSchedule(packets[0].payload)).toEqual({ dayMask: 96, events: draft.days[5].events });
+  });
+  test('distinct desired days stay separate even when they share some periods', () => {
+    const before = week(), draft = JSON.parse(JSON.stringify(before));
+    draft.days[0].events[0].temperature = 30; draft.days[1].events[0].temperature = 30;
+    draft.days[1].events[2].temperature = 22;
+    expect(planFastWarmScheduleWrites(before, draft, 'grouped-days').map(p => p.dayMask)).toEqual([1, 2]);
+  });
+  test.each(['single-events', 'whole-days', 'grouped-events', 'grouped-days'] as const)('a matching week sends nothing in %s mode', mode => {
+    const before = week(); expect(planFastWarmScheduleWrites(before, before, mode)).toEqual([]);
+  });
+  test('planning rejects incomplete inputs and unsupported modes without mutating source weeks', () => {
+    const before = week(), copy = structuredClone(before), draft = structuredClone(before); draft.days[0].events[0].temperature = 30;
+    const packets = planFastWarmScheduleWrites(before, draft, 'grouped-days'); packets[0].events[0].temperature = 5;
+    expect(before).toEqual(copy); expect(draft.days[0].events[0].temperature).toBe(30);
+    expect(() => planFastWarmScheduleWrites({ ...before, complete: false }, draft, 'grouped-days')).toThrow();
+    expect(() => planFastWarmScheduleWrites(before, draft, 'unknown' as never)).toThrow();
   });
 });

@@ -1,6 +1,6 @@
 import EventEmitter from 'events';
 import TuyaOpenAPI from '../core/TuyaOpenAPI';
-import TuyaOpenMQ from '../core/TuyaOpenMQ';
+import TuyaOpenMQ, { TuyaMQConnectionEvent } from '../core/TuyaOpenMQ';
 import { ExLogger, logger, PrefixLogger } from '../util/Logger';
 import TuyaDevice, {
   TuyaDeviceSchema,
@@ -52,6 +52,11 @@ export default class TuyaDeviceManager extends EventEmitter {
   private supplementalTemperatureReports = new Map<string, FastWarmTemperatureReport & { time: number }>();
   private supplementalTemperatureRequests = new Map<string, Promise<void>>();
   private supplementalTemperatureRetries = new Map<string, { nextAttempt: number; failures: number }>();
+  private supplementalTemperatureHydrated = new Set<string>();
+  private supplementalTemperatureRecovery = new Map<string, number>();
+  private temperatureAwaitingConnectionReport = new Set<string>();
+  private supplementalTemperatureRecoveryAttempts: number[] = [];
+  private supplementalTemperatureBudgetWarning = false;
   private temperatureObservations = new Map<string, ThermostatTemperatureObservation>();
   private targetTemperatureReports = new Map<string, FastWarmTemperatureReport & { time: number }>();
 
@@ -67,6 +72,7 @@ export default class TuyaDeviceManager extends EventEmitter {
 
     this.mq = new TuyaOpenMQ(api);
     this.mq.addMessageListener(this.onMQTTMessage.bind(this));
+    this.mq.addConnectionListener(this.onMQTTConnection);
   }
 
   createVirtualDevice(baseDevice: TuyaDevice, uuid: string): TuyaDevice {
@@ -232,7 +238,11 @@ export default class TuyaDeviceManager extends EventEmitter {
     }
   }
 
-  /** MQTT supplies normal updates; HomeKit reads can recover a missed report, at most once per five minutes. */
+  /**
+   * A HomeKit read never polls an established temperature cache. Stable rooms can
+   * legitimately send no changed temperature for hours; MQTT connection health,
+   * rather than the age of that unchanged value, determines recovery.
+   */
   async refreshSupplementalTemperature(device: TuyaDevice): Promise<void> {
     if (!isFastWarmThermostat(device) || !this.supplementalTemperatureDevices.has(device.id) || !device.online) {
       return;
@@ -241,12 +251,40 @@ export default class TuyaDeviceManager extends EventEmitter {
     if (pending) {
       return pending;
     }
+    const recovery = this.supplementalTemperatureRecovery.has(device.id);
+    if (this.temperatureObservations.has(device.id) && !recovery) {
+      return;
+    }
+    // Recover a missed connection interval only after the push stream is back.
+    // HomeKit reads during a broker outage do not become a new REST polling loop.
+    if (recovery && !this.mq.isConnected()) {
+      return;
+    }
     const retry = this.supplementalTemperatureRetries.get(device.id);
-    if (retry && Date.now() < retry.nextAttempt) {
+    if (retry && Date.now() < retry.nextAttempt && (retry.failures > 0 || !recovery)) {
       return;
     }
 
-    const request = this.fetchSupplementalTemperature(device);
+    // One initial hydration per device is part of discovery. Subsequent missing
+    // observations and reconnection recovery share six one-shot requests per day
+    // across this manager, rather than six requests per room every five minutes.
+    const now = Date.now();
+    this.supplementalTemperatureRecoveryAttempts = this.supplementalTemperatureRecoveryAttempts
+      .filter(at => at > now - 24 * 60 * 60 * 1000);
+    if (this.supplementalTemperatureHydrated.has(device.id)) {
+      if (this.supplementalTemperatureRecoveryAttempts.length >= 6) {
+        if (!this.supplementalTemperatureBudgetWarning) {
+          this.log.warn('FastWarm automatic temperature recovery limit reached; waiting for MQTT updates.');
+          this.supplementalTemperatureBudgetWarning = true;
+        }
+        return;
+      }
+      this.supplementalTemperatureRecoveryAttempts.push(now);
+    }
+    this.supplementalTemperatureHydrated.add(device.id);
+    this.supplementalTemperatureBudgetWarning = false;
+
+    const request = this.fetchSupplementalTemperature(device, this.supplementalTemperatureRecovery.get(device.id));
     this.supplementalTemperatureRequests.set(device.id, request);
     try {
       await request;
@@ -255,17 +293,56 @@ export default class TuyaDeviceManager extends EventEmitter {
     }
   }
 
+  private onMQTTConnection = (event: TuyaMQConnectionEvent): void => {
+    if (!event.connected) {
+      return;
+    }
+    for (const device of this.devices) {
+      if (!this.supplementalTemperatureDevices.has(device.id)) {
+        if (event.recoveryRequired && isFastWarmThermostat(device)) {
+          this.temperatureAwaitingConnectionReport.add(device.id);
+        }
+        continue;
+      }
+      if (event.recoveryRequired) {
+        this.requireTemperatureRecovery(device.id);
+      } else if (this.temperatureObservations.has(device.id)) {
+        continue;
+      }
+      void this.refreshSupplementalTemperature(device);
+    }
+  };
+
+  private requireTemperatureRecovery(id: string): void {
+    this.supplementalTemperatureRecovery.set(id, (this.supplementalTemperatureRecovery.get(id) ?? 0) + 1);
+    this.temperatureAwaitingConnectionReport.add(id);
+  }
+
   /** Metadata from a real accepted report; reading the cache never advances these times. */
   getTemperatureObservation(deviceId: string): ThermostatTemperatureObservation | undefined {
     const observation = this.temperatureObservations.get(deviceId);
     return observation && { ...observation };
   }
 
-  private async fetchSupplementalTemperature(device: TuyaDevice): Promise<void> {
+  /** Cache reads never manufacture freshness or treat a reconnect itself as a measurement. */
+  isTemperatureAvailable(deviceId: string): boolean {
+    const device = this.getDevice(deviceId);
+    const observation = this.temperatureObservations.get(deviceId);
+    if (!device?.online || !observation || this.temperatureAwaitingConnectionReport.has(deviceId)) {
+      return false;
+    }
+    if (this.mq.isConnected()) {
+      return true;
+    }
+    const age = Date.now() - observation.receivedAt;
+    return age >= 0 && age <= 5 * 60 * 1000;
+  }
+
+  private async fetchSupplementalTemperature(device: TuyaDevice, recovery?: number): Promise<void> {
     try {
-      const response = await this.api.get(`/v2.0/cloud/thing/${device.id}/shadow/properties`, {
+      const response = await this.api.request('get', `/v2.0/cloud/thing/${device.id}/shadow/properties`, {
         codes: this.hasFastWarmCelsiusTarget(device) ? 'RoomTemper,SetTemp' : 'RoomTemper',
-      });
+      }, null, { attempts: 1, timeoutMs: 10000 });
       const properties: unknown[] = Array.isArray(response.result?.properties) ? response.result.properties : [];
       if (response.success !== false && this.hasFastWarmCelsiusTarget(device)) {
         const target = properties.map(getFastWarmSetTemperatureReport).find(value => value !== undefined);
@@ -279,8 +356,15 @@ export default class TuyaDeviceManager extends EventEmitter {
         throw new Error(response.success === false ? `${response.code}: ${response.msg}` : 'RoomTemper was not returned');
       }
       this.supplementalTemperatureRetries.set(device.id, { failures: 0, nextAttempt: Date.now() + 5 * 60 * 1000 });
+      const connectionRecovered = this.supplementalTemperatureRecovery.get(device.id) === recovery;
       const previous = this.temperatureObservations.get(device.id);
-      const status = this.applySupplementalTemperature(device, report, 'shadow');
+      const status = this.applySupplementalTemperature(device, report, 'shadow', connectionRecovered);
+      if (connectionRecovered && this.temperatureAwaitingConnectionReport.has(device.id)) {
+        throw new Error('The shadow temperature was older than the established observation.');
+      }
+      if (connectionRecovered) {
+        this.supplementalTemperatureRecovery.delete(device.id);
+      }
       if (status) {
         this.emit(Events.DEVICE_STATUS_UPDATE, device, [status]);
       }
@@ -296,7 +380,7 @@ export default class TuyaDeviceManager extends EventEmitter {
   }
 
   private applySupplementalTemperature(
-    device: TuyaDevice, report: FastWarmTemperatureReport, source?: 'shadow' | 'mqtt',
+    device: TuyaDevice, report: FastWarmTemperatureReport, source?: 'shadow' | 'mqtt', connectionRecovered = true,
   ): TuyaDeviceStatus | undefined {
     const time = report.time ?? Date.now();
     if (time > Date.now() + 5 * 60_000 || time < (this.supplementalTemperatureReports.get(device.id)?.time ?? 0)) {
@@ -307,6 +391,9 @@ export default class TuyaDeviceManager extends EventEmitter {
       this.temperatureObservations.set(device.id, {
         value: report.value, reportedAt: report.time, receivedAt: Date.now(), source,
       });
+      if (connectionRecovered) {
+        this.temperatureAwaitingConnectionReport.delete(device.id);
+      }
     }
     const status = { code: 'temp_current', value: report.value };
     const existing = device.status.find(item => item.code === status.code);
@@ -702,6 +789,7 @@ export default class TuyaDeviceManager extends EventEmitter {
                 this.temperatureObservations.set(device.id, {
                   value: report.value, reportedAt: report.time, receivedAt: Date.now(), source: 'mqtt',
                 });
+                this.temperatureAwaitingConnectionReport.delete(device.id);
               }
             }
           }
@@ -752,8 +840,16 @@ export default class TuyaDeviceManager extends EventEmitter {
           if (!device) {
             return;
           }
+          const wasOnline = device.online;
           device.online = (bizCode === 'online') ? true : false;
           this.emit(Events.DEVICE_INFO_UPDATE, device, bizData);
+          if (!wasOnline && device.online && isFastWarmThermostat(device)) {
+            this.temperatureAwaitingConnectionReport.add(device.id);
+            if (this.supplementalTemperatureDevices.has(device.id)) {
+              this.requireTemperatureRecovery(device.id);
+              void this.refreshSupplementalTemperature(device);
+            }
+          }
         } else if (bizCode === 'delete') {
           const { ownerId } = bizData;
           if (!this.ownerIDs.includes(ownerId)) {

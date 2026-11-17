@@ -49,7 +49,8 @@ export default class ThermostatAccessory extends BaseAccessory {
         // Do not hold a HomeKit read open while the cloud API retries; MQTT normally maintains this cache.
         void this.deviceManager.refreshSupplementalTemperature(this.device);
         const status = this.getStatus('temp_current');
-        if (!status || typeof status.value !== 'number' || !Number.isFinite(status.value)) {
+        if (!status || typeof status.value !== 'number' || !Number.isFinite(status.value)
+          || !this.deviceManager.isTemperatureAvailable(this.device.id)) {
           const { HapStatusError, HAPStatus } = this.platform.api.hap;
           throw new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
         }

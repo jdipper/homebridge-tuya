@@ -63,6 +63,7 @@ describe('FastWarm thermostat HomeKit characteristics', () => {
     manager = {
       getDevice: () => device,
       refreshSupplementalTemperature: jest.fn(async () => undefined),
+      isTemperatureAvailable: jest.fn(() => true),
       sendCommands: jest.fn(async () => true),
     };
     const platform: any = {
@@ -113,6 +114,15 @@ describe('FastWarm thermostat HomeKit characteristics', () => {
   test('serves a cached measurement without waiting for a slow cloud refresh', async () => {
     manager.refreshSupplementalTemperature.mockReturnValue(new Promise(() => undefined));
     accessory.configureServices();
+    expect(await characteristics.get('CurrentTemperature').getHandler()).toBe(19.5);
+  });
+
+  test('does not show a stale number while the manager is waiting for a real connection recovery report', async () => {
+    manager.isTemperatureAvailable.mockReturnValue(false);
+    accessory.configureServices();
+    await expect(characteristics.get('CurrentTemperature').getHandler()).rejects.toMatchObject({hapStatus: -70402});
+    expect(characteristics.get('TargetTemperature').getHandler()).toBe(20);
+    manager.isTemperatureAvailable.mockReturnValue(true);
     expect(await characteristics.get('CurrentTemperature').getHandler()).toBe(19.5);
   });
 

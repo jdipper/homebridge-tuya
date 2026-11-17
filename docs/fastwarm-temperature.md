@@ -11,9 +11,14 @@ For example, raw room temperature `195` displays as 19.5 C independently of a
 `temp_set` value of `200` (20 C). A genuine standard `temp_current` is preferred
 when the device already supplies it. No additional configuration is required.
 
-The initial shadow read happens during discovery. Later HomeKit reads can request
-a recovery read, with throttling, concurrent-request coalescing and backoff on
-failures. Normal sensor changes use MQTT. The profile creates no polling timer.
+The initial shadow read happens during discovery. Later HomeKit reads use the
+accepted cache while MQTT is healthy, even if a quiet room reports no change for
+hours. They do not request periodic cloud reads. Unexpected MQTT interruptions or
+device reconnections can request one coalesced recovery, with a manager-wide cap
+of six one-shot requests per rolling day and backoff on failures. Ordinary short
+credential renewals do not cause recovery. After a prolonged disconnection, old
+readings are unavailable in HomeKit until an accepted observation arrives; cache
+reads never advance its timestamp. Normal sensor changes use MQTT.
 Existing standard setpoint, power and display-unit command codes are retained.
 
 For this exact product in Celsius, native `SetTemp` (DP102, scale 1) also feeds

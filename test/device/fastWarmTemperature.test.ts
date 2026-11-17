@@ -26,13 +26,13 @@ describe('FastWarm raw temperature support', () => {
   let api: TuyaOpenAPI;
   let manager: TuyaDeviceManager;
   let device: TuyaDevice;
-  let get: jest.SpiedFunction<TuyaOpenAPI['get']>;
+  let get: jest.SpiedFunction<TuyaOpenAPI['request']>;
 
   beforeEach(() => {
     jest.spyOn(Date, 'now').mockReturnValue(NOW);
     initLogger({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() });
     api = new TuyaOpenAPI(TuyaOpenAPI.Endpoints.EUROPE, 'test-access-id', 'test-key');
-    get = jest.spyOn(api, 'get').mockResolvedValue(shadow());
+    get = jest.spyOn(api, 'request').mockResolvedValue(shadow());
     manager = new TuyaDeviceManager(api);
     device = createDevice();
     manager.devices = [device];
@@ -40,12 +40,20 @@ describe('FastWarm raw temperature support', () => {
 
   afterEach(() => { jest.restoreAllMocks(); });
 
+  function connectPush() {
+    const client = {connected: true, removeAllListeners() {}, end() {this.connected = false;}};
+    manager.mq.client = client as unknown as NonNullable<typeof manager.mq.client>;
+    manager.mq._onConnect();
+    return client;
+  }
+
   test('hydrates DP105, preserving the standard controls and their API', async () => {
     const originalStatus = device.status.map(status => ({ ...status }));
     const post = jest.spyOn(api, 'post').mockResolvedValue({ success: true, result: true, t: NOW, tid: 'test' });
     await manager.enrichDeviceStatus(device);
 
-    expect(get).toHaveBeenCalledWith('/v2.0/cloud/thing/thermostat-1/shadow/properties', { codes: 'RoomTemper,SetTemp' });
+    expect(get).toHaveBeenCalledWith('get', '/v2.0/cloud/thing/thermostat-1/shadow/properties',
+      { codes: 'RoomTemper,SetTemp' }, null, { attempts: 1, timeoutMs: 10000 });
     expect(device.schema.find(schema => schema.code === 'temp_current')).toMatchObject({
       mode: 'ro', type: 'Integer', property: { scale: 1 },
     });
@@ -141,11 +149,133 @@ describe('FastWarm raw temperature support', () => {
     expect(get).toHaveBeenCalledTimes(1);
   });
 
-  test('throttles successful reads to five minutes without scheduling background polling', async () => {
+  test('healthy MQTT keeps an unchanged room temperature without HomeKit REST polling or fake freshness', async () => {
+    jest.spyOn(manager.mq, 'isConnected').mockReturnValue(true);
     await manager.enrichDeviceStatus(device);
+    const observation = manager.getTemperatureObservation(device.id);
     await manager.refreshSupplementalTemperature(device);
     expect(get).toHaveBeenCalledTimes(1);
-    jest.spyOn(Date, 'now').mockReturnValue(NOW + 5 * 60 * 1000);
+    for (let hour = 1; hour <= 48; hour++) {
+      jest.spyOn(Date, 'now').mockReturnValue(NOW + hour * 60 * 60 * 1000);
+      await manager.refreshSupplementalTemperature(device);
+    }
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(manager.getTemperatureObservation(device.id)).toEqual(observation);
+  });
+
+  test('HomeKit reads during an MQTT outage do not become REST polling', async () => {
+    await manager.enrichDeviceStatus(device);
+    const observation = manager.getTemperatureObservation(device.id);
+    jest.spyOn(Date, 'now').mockReturnValue(NOW + 60 * 60 * 1000);
+    await manager.refreshSupplementalTemperature(device);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(manager.getTemperatureObservation(device.id)).toEqual(observation);
+  });
+
+  test('availability requires an actual observation and limits a disconnected cache to five minutes', async () => {
+    expect(manager.isTemperatureAvailable(device.id)).toBe(false);
+    await manager.enrichDeviceStatus(device);
+    const observation = manager.getTemperatureObservation(device.id);
+    expect(manager.isTemperatureAvailable(device.id)).toBe(true);
+    jest.spyOn(Date, 'now').mockReturnValue(NOW + 5 * 60_000);
+    expect(manager.isTemperatureAvailable(device.id)).toBe(true);
+    jest.spyOn(Date, 'now').mockReturnValue(NOW + 5 * 60_000 + 1);
+    expect(manager.isTemperatureAvailable(device.id)).toBe(false);
+    expect(manager.getTemperatureObservation(device.id)).toEqual(observation);
+    connectPush();
+    expect(manager.isTemperatureAvailable(device.id)).toBe(true);
+    expect(manager.getTemperatureObservation(device.id)).toEqual(observation);
+  });
+
+  test('a quiet room with healthy MQTT stays available for days without changing its measurement timestamp', async () => {
+    await manager.enrichDeviceStatus(device); connectPush();
+    const observation = manager.getTemperatureObservation(device.id);
+    jest.spyOn(Date, 'now').mockReturnValue(NOW + 7 * 24 * 60 * 60_000);
+    expect(manager.isTemperatureAvailable(device.id)).toBe(true);
+    expect(manager.getTemperatureObservation(device.id)).toEqual(observation);
+  });
+
+  test('reconnecting after lost state waits for a real shadow observation before making the cache available', async () => {
+    await manager.enrichDeviceStatus(device); const client = connectPush();
+    manager.mq.stop(); jest.spyOn(Date, 'now').mockReturnValue(NOW + 6 * 60_000);
+    expect(manager.isTemperatureAvailable(device.id)).toBe(false);
+    let resolve: (value: ReturnType<typeof shadow>) => void = () => undefined;
+    get.mockReturnValue(new Promise(done => {resolve = done;}));
+    client.connected = true; manager.mq._onConnect();
+    expect(manager.isTemperatureAvailable(device.id)).toBe(false);
+    const recovering = manager.refreshSupplementalTemperature(device);
+    resolve(shadow(200, NOW + 6 * 60_000)); await recovering;
+    expect(manager.isTemperatureAvailable(device.id)).toBe(true);
+    expect(manager.getTemperatureObservation(device.id)).toMatchObject({value: 200, receivedAt: NOW + 6 * 60_000});
+  });
+
+  test('a stale recovery shadow cannot restore availability but an accepted MQTT report can', async () => {
+    await manager.enrichDeviceStatus(device); const client = connectPush();
+    await manager.onMQTTMessage('test', 4, {devId: device.id, status: [{dpId: 105, value: 200, t: NOW + 1000}]});
+    manager.mq.stop(); jest.spyOn(Date, 'now').mockReturnValue(NOW + 6 * 60_000);
+    get.mockResolvedValue(shadow(180, NOW));
+    client.connected = true; manager.mq._onConnect(); await manager.refreshSupplementalTemperature(device);
+    expect(manager.isTemperatureAvailable(device.id)).toBe(false);
+    expect(device.status.find(item => item.code === 'temp_current')?.value).toBe(200);
+    await manager.onMQTTMessage('test', 4, {devId: device.id, status: [{dpId: 105, value: 205, t: NOW + 6 * 60_000}]});
+    expect(manager.isTemperatureAvailable(device.id)).toBe(true);
+    expect(manager.getTemperatureObservation(device.id)).toMatchObject({value: 205, source: 'mqtt'});
+  });
+
+  test('normal credential rotations preserve a quiet room without twelve daily REST recoveries', async () => {
+    await manager.enrichDeviceStatus(device);
+    const observation = manager.getTemperatureObservation(device.id);
+    const client = connectPush();
+    for (let hour = 2; hour <= 24; hour += 2) {
+      jest.spyOn(Date, 'now').mockReturnValue(NOW + hour * 60 * 60 * 1000);
+      manager.mq.stop(true);
+      client.connected = true; manager.mq._onConnect();
+      await manager.refreshSupplementalTemperature(device);
+    }
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(manager.getTemperatureObservation(device.id)).toEqual(observation);
+  });
+
+  test('unexpected MQTT interruption recovers once after reconnect and coalesces simultaneous HomeKit reads', async () => {
+    await manager.enrichDeviceStatus(device);
+    const client = connectPush();
+    manager.mq.stop();
+    jest.spyOn(Date, 'now').mockReturnValue(NOW + 60_000);
+    await manager.refreshSupplementalTemperature(device);
+    expect(get).toHaveBeenCalledTimes(1);
+    client.connected = true; manager.mq._onConnect();
+    await Promise.all([manager.refreshSupplementalTemperature(device), manager.refreshSupplementalTemperature(device)]);
+    expect(get).toHaveBeenCalledTimes(2);
+    await manager.refreshSupplementalTemperature(device);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  test('all six rooms share six one-shot automatic recovery requests per rolling day', async () => {
+    const devices = Array.from({length: 6}, (_, index) => new TuyaDevice({...createDevice(), id: `thermostat-${index}`}));
+    manager.devices = devices;
+    await Promise.all(devices.map(room => manager.enrichDeviceStatus(room)));
+    expect(get).toHaveBeenCalledTimes(6);
+    const client = connectPush();
+    const reconnect = async () => {
+      manager.mq.stop(); client.connected = true; manager.mq._onConnect();
+      await Promise.all(devices.map(room => manager.refreshSupplementalTemperature(room)));
+    };
+    await reconnect(); expect(get).toHaveBeenCalledTimes(12);
+    await reconnect(); expect(get).toHaveBeenCalledTimes(12);
+    jest.spyOn(Date, 'now').mockReturnValue(NOW + 24 * 60 * 60 * 1000 + 1);
+    await reconnect(); expect(get).toHaveBeenCalledTimes(18);
+    expect(get.mock.calls.every(call => call[4]?.attempts === 1)).toBe(true);
+  });
+
+  test('a real offline-to-online device event recovers once, duplicate online events do not poll', async () => {
+    await manager.enrichDeviceStatus(device); connectPush();
+    await manager.onMQTTMessage('test', 20, {devId: device.id, bizCode: 'offline', bizData: {}});
+    await manager.refreshSupplementalTemperature(device);
+    expect(get).toHaveBeenCalledTimes(1);
+    await manager.onMQTTMessage('test', 20, {devId: device.id, bizCode: 'online', bizData: {}});
+    await manager.refreshSupplementalTemperature(device);
+    expect(get).toHaveBeenCalledTimes(2);
+    await manager.onMQTTMessage('test', 20, {devId: device.id, bizCode: 'online', bizData: {}});
     await manager.refreshSupplementalTemperature(device);
     expect(get).toHaveBeenCalledTimes(2);
   });
@@ -248,6 +378,14 @@ describe('FastWarm raw temperature support', () => {
       devId: device.id, status: [{ code: 'temp_current', value: 190, t: NOW }],
     });
     expect(manager.getTemperatureObservation(device.id)).toMatchObject({ value: 190, reportedAt: NOW, source: 'mqtt' });
+    const client = connectPush();
+    manager.mq.stop(); client.connected = true; manager.mq._onConnect();
+    expect(manager.isTemperatureAvailable(device.id)).toBe(false);
+    await manager.onMQTTMessage('test', 4, {
+      devId: device.id, status: [{ code: 'temp_current', value: 190, t: NOW + 1 }],
+    });
+    expect(manager.isTemperatureAvailable(device.id)).toBe(true);
+    expect(get).not.toHaveBeenCalled();
   });
 
   test('retains quoted source timestamps rather than treating a late shadow as a new report', async () => {

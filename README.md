@@ -1,406 +1,152 @@
-# Homebridge Tuya — FastWarm fork
+# Homebridge Tuya — FastWarm device connection
 
-[![Build and Lint](https://github.com/jdipper/homebridge-tuya/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/jdipper/homebridge-tuya/actions/workflows/build.yml)
-[![MIT license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-
-This is [jdipper's fork](https://github.com/jdipper/homebridge-tuya) of
+This is [jdipper’s fork](https://github.com/jdipper/homebridge-tuya) of
 [homebridge-plugins/homebridge-tuya](https://github.com/homebridge-plugins/homebridge-tuya),
-with FastWarm thermostat temperature support, a household programme editor and
-security fixes. The original project builds on `0x5e/homebridge-tuya-platform`.
+with measured FastWarm room temperatures, a device connection for the shared
+heating controller, and security fixes.
 
-**`main` contains the combined build for this fork.** Security and thermostat
-display fixes also have separate branches for possible upstream pull requests.
-The scheduling features are maintained in this fork. See
-[branches and upstream contributions](#branches-and-upstream-contributions).
+## Shared heating controller
 
-This fork's npm package is **`@jdipper/homebridge-tuya`**, starting with version
-**`2.7.2-jdipper.2`**, and displays **Homebridge Tuya (jdipper FastWarm)**.
-It has its own npm update source. The upstream package is
-`@homebridge-plugins/homebridge-tuya`; its Homebridge verification status belongs
-to the original project. This fork is not a separately verified release.
+The local `2.7.3-jdipper.6` build separates device integration from household
+control. **Heating Programmes** owns the programme editor, saved Home/Away/Holiday
+drafts, household presence, Holiday return, history and the Apple Home switches.
+This Tuya plugin owns Tuya authentication, normal HomeKit accessories, accepted
+room-temperature reports, SmartLife room names and native FastWarm programme
+reads/writes. It publishes no household switches or policy timers.
 
-## Features
+Existing `persist/TuyaThermostatProfiles.<instanceId>.json` files are left untouched
+for the shared controller’s migration. They are never read to apply programmes
+or resume a timer by this build. The legacy Home and Holiday accessories are
+retired only after the private device provider starts successfully. The shared
+controller publishes the replacement controls.
 
-- Measured room temperature shown separately from the target on supported FastWarm
-  Smart WiFi 2.0 / ET-63 thermostats, including native temperature updates.
-- SmartLife room names in the Homebridge editor, with optional local aliases.
-- Independent **Home**, **Away** and **Holiday** weekly programmes per room, each
-  with four temperature periods per day.
-- Import the programmes already stored on the thermostats, or use one shared
-  editor to prepare a programme for all or selected rooms.
-- Separate draft saving, preview and application, with complete native programme
-  readback and confirmation for each room.
-- Apple Home switches for household presence and Holiday, plus an Away delay,
-  guest hold and optional Holiday return/preheat time in Homebridge.
-- Local temperature history and saved programme versions.
-- Credential redaction, private diagnostic/state files and cancellation of
-  superseded smart-lock requests.
-- The upstream Tuya device integrations, Scenes (Tap-to-Run) and configurable
-  device/schema overrides.
+The device connection keeps its owner-only descriptor in Homebridge’s `persist`
+directory and its Unix socket in the separate private `heating-runtime` directory.
+Keeping sockets outside `persist` allows Homebridge to restart child bridges safely. It reuses the running plugin’s authenticated
+Tuya session; Tuya credentials never pass to the shared controller or editor.
+The provider buffers actual accepted temperature, target and availability events
+between controller polls, with a unique identity per event and bounded memory
+(200 observations per room, 2,000 in total). Startup and cached reads create no
+history samples. Explicit room refresh updates SmartLife names; background
+reads use the existing room cache.
+Reads and previews do not change temperatures, programmes, power or mode.
+Application consumes one short-lived preview, checks a fresh baseline, writes
+changed periods once, and requires complete readback and Scheduled mode before
+reporting confirmation. Uncertain outcomes are never automatically retried.
 
-FastWarm support targets product ID `lmtejj3f4kafi2k1`; Celsius is the verified
-temperature format. See [room temperature support](docs/fastwarm-temperature.md),
-[programme controls](docs/fastwarm-profiles.md) and the
-[editor guide](homebridge-ui/README.md).
+FastWarm support targets the ET-63 product `lmtejj3f4kafi2k1`, configured in Celsius
+and seven-day mode. Each day has four strictly increasing periods, with targets
+from 5 to 40°C in 0.5°C steps. An application will not cancel a Hold or other mode
+change made after its preview.
 
-## Getting started with FastWarm
+### FastWarm upload efficiency
 
-1. Install this fork and configure its existing Tuya cloud connection using the
-   [configuration guide](#configuration).
-2. Open the Tuya plugin's configuration page in Homebridge and choose
-   **Thermostats**. Select seven-day programming in SmartLife before applying
-   weekly profiles.
-3. Choose a Home, Away or Holiday profile and use **Load stored programmes** to
-   import each room's current programme. Use **Edit programme for all rooms** for
-   one shared editor, with room selection to limit its scope.
-4. Save the drafts, then choose **Review & apply**. Saving or importing a draft
-   does not change the heating; application uploads the programme and selects
-   Scheduled mode. Check the room confirmations after application.
-5. Save all three profiles for a room before enabling **Use saved profiles for
-   automatic household changes**. That room will then follow subsequent household
-   selections.
+With Heating Programmes `0.1.0-jdipper.5` or later, automatic profile changes keep one
+fresh native week reserved in the device queue while the controller checks its
+saved draft. Applying that one-shot reservation saves the complete baseline in a
+private operation journal, reads fresh controls, sends the changed periods, then
+verifies the complete resulting week and controls. A changed programme costs
+**four cloud checks plus one request per planned upload packet**; a matching week
+needs two checks and no write. Manual review/apply retains its independent fresh
+baseline checks. Expired reservations, disconnects or observed external programme
+edits stop before uploading. Verification may repeat a read; uncertain programme
+writes are never retried automatically.
 
-The two separate accessories in Apple Home select household programmes:
+The default remains the verified six-byte, single-period update. Advanced
+`options.fastWarmProgrammeWriteModes` entries opt in **individual device IDs**
+only after a changed-programme test and complete restoration have verified the
+packet shape on that thermostat:
 
-| Accessory | On | Off |
-| --- | --- | --- |
-| Heating Home | Select Home | Select Away after the configured delay |
-| Heating Holiday | Select Holiday, with priority over presence | Resume the Home/Away selection |
+- `grouped-events`: identical changed periods share a six-byte packet and day mask.
+- `whole-days`: each changed day is sent as all four periods in one 21-byte packet.
+- `grouped-days`: identical complete desired days share a 21-byte packet and day mask.
 
-Set the initial household presence, then configure automations to turn **Heating
-Home** on when the first person arrives and off when the last person leaves.
-Presence changes during Holiday are remembered. The default Away delay is 30
-minutes and can be changed in the editor.
+Unlisted thermostats retain single-period uploads. Two/three-period packets are
+never generated. Acknowledgement alone does not prove support: unchanged writes
+can appear successful even if firmware ignores them. Failed or unconfirmed
+grouped uploads never fall back to another write format automatically.
 
-Apple Home provides these on/off controls; the programme tables, application
-progress and Holiday return date/time are in Homebridge. Expand **Presence,
-guests & holiday return** to set a return time and optional Home preheat lead.
-Saving a Holiday return enables Holiday immediately. At the deadline, Holiday
-ends and the latest presence/guest hold chooses Home or Away.
-Unknown presence or an overdue return after a restart requires review in
-Homebridge.
+### Shared requests across thermostats
 
-## Current validation limits
+`options.fastWarmProgrammeGroups` can opt in an existing Tuya group after a
+changed-period test and exact restoration have been verified independently on
+all six members. Each entry contains a decimal `groupId` string and exactly six
+unique `deviceIds`. The plugin never creates groups or changes their membership.
 
-- **Boosts and temporary setbacks are disabled.** Hardware testing has not yet
-  established reliable Hold and timed restoration across programme changes.
-- Programme uploads, household profile changes and Holiday return/preheat need
-  Homebridge running with a working Tuya internet connection.
-- The thermostat stores its uploaded weekly programme. Execution during a WAN
-  outage, clock retention after power loss and daylight-saving behaviour still
-  need hardware validation.
-- Each room is checked against all 28 native periods after an upload. An
-  interrupted upload can leave a partial programme. Review a failure and use
-  **Verify saved Home/Away/Holiday programme** for a fresh read-only check before
-  deciding whether to apply again.
+Only concurrent automatic operations for every configured member can share a
+request. Inquiries keep a separate fresh message collector for each thermostat;
+programme writes must have the same six-byte single-period packet for all six.
+Different room targets, missing participants and manual operations use individual
+requests. Membership is freshly checked before each shared request, and every
+member must still approve dispatch after authentication.
 
-The [programme guide](docs/fastwarm-profiles.md) describes conflict handling,
-confirmation, restart recovery and the remaining hardware checks.
+Validated instruction definitions are cached in memory for up to 24 hours, so
+baseline inquiries, writes and readbacks can reuse the same capability check.
+The cache contains supported instruction types and raw-packet length limits;
+it contains no thermostat readings, mode values, schedules or membership data.
+It is cleared by connection recovery, device information or availability changes,
+authentication recovery, failed validation or commands, and shutdown. Ordinary
+short credential rotations retain it. No cache is persisted across restarts.
 
+Each thermostat retains its own queue reservation, complete backup, fresh mode
+checks and full-week confirmation. One group's acknowledgement or group status
+never confirms all the rooms. Failed or uncertain group commands are not retried
+as individual commands. If group membership or supported properties change, the
+operation stops for review. Group requests count in the local API usage meter;
+their treatment under Tuya's billing allowance must be checked separately.
 
-## Supported Tuya Devices
-See [SUPPORTED_DEVICES.md](./SUPPORTED_DEVICES.md)
+With six changed rooms, one packet per room and both inquiries grouped, a Home
+change needs 23 HTTP attempts with a cold capability cache or 22 with a warm one.
+An identical Away packet shared by all six needs 19 cold or 18 warm. These counts
+include fresh membership and individual controls before and after application;
+authentication, recovery, extra readbacks, Hive and individual fallback add calls.
 
+### Cloud request budget
 
-## Changelogs
-See [CHANGELOG.md](./CHANGELOG.md)
+HomeKit temperature reads use real cached observations while the push connection
+is healthy, including quiet rooms whose temperature has not changed. They do not
+start five-minute REST polling. Initial discovery hydrates missing temperatures;
+unexpected push interruptions or a device coming back online can request one
+coalesced recovery. Recovery is limited to six one-shot requests per rolling day
+across the manager. Ordinary short credential renewals do not trigger recovery.
+During an interruption, observations older than five minutes are unavailable in
+HomeKit until an accepted report or recovery arrives. Cache reads never advance
+the observation timestamp.
 
+Concurrent expired-token requests share one refresh. The owner-only
+`persist/TuyaApiUsage.<instanceId>.json` counter records actual HTTP attempts,
+including retries, authentication and push-connection renewal, in fixed categories.
+It stores no request URLs, headers, bodies, device IDs or credentials. Heating
+Programmes displays these local counts under **Tuya API usage**. They measure
+this plugin instance from the displayed start time, not Tuya billing or other apps.
+Counters survive restarts and reset with the UTC month; accounting failures do
+not interrupt heating. Repeated restarts still incur new discovery requests.
 
-## Installation
+## Installation and settings
 
-Use a Node.js version supported by your Homebridge installation; the plugin's
-version ranges are listed in [package.json](./package.json). Preserve your
-Homebridge configuration and persist directory when replacing an installation.
-Run one Tuya implementation at a time. The upstream
-`@homebridge-plugins/homebridge-tuya` and older `homebridge-tuya-platform` plugins
-cannot run alongside this package with the same `TuyaPlatform` configuration.
+The npm package remains **`@jdipper/homebridge-tuya`**, displayed as
+**Homebridge Tuya (jdipper FastWarm)**. This local development build has not been
+published to npm. Keep the shared-controller build and this provider together
+when deploying the migration.
 
-### Install from npm
+Tuya connection settings and normal accessories continue to use the existing
+Homebridge configuration. Open this plugin’s settings to edit credentials and
+accessory settings; open **Heating Programmes** to manage heating programmes.
+See [advanced options](ADVANCED_OPTIONS.md), [supported devices](SUPPORTED_DEVICES.md)
+and [FastWarm temperature support](docs/fastwarm-temperature.md).
 
-Install `@jdipper/homebridge-tuya` through your Homebridge plugin manager.
-For a local npm-managed installation, run this from
-its storage directory:
-
-```sh
-npm install --save-exact @jdipper/homebridge-tuya@2.7.2-jdipper.2
-```
-
-Future updates to this package come from the fork's npm releases. Publishing is
-described in the [npm release guide](docs/npm-publishing.md).
-
-### Migrate an existing installation
-
-Back up the Homebridge configuration, persist directory and installed plugin.
-Replace the existing Tuya package with `@jdipper/homebridge-tuya`, ensuring the
-old implementation is removed before restarting Homebridge. Keep the
-`TuyaPlatform` configuration, its name and child bridge username unchanged.
-Restart Homebridge after changing the package name so it discovers the new
-plugin and can reassociate cached accessories.
-
-Thermostat UUIDs and saved programme instance IDs are unchanged. Heating Home
-and Heating Holiday retain the earlier fork's UUID namespace so their existing
-Apple Home identities can be reused. Keep the full backup until room readings,
-saved programmes and household controls have been verified after migration.
-
-The earlier GitHub release `v2.7.2-jdipper.1` used the upstream package name. Its
-archive does not install the new npm package.
-
-### Build this fork
-
-Compiled files are not tracked in Git, so build before installing:
+## Development
 
 ```sh
-git clone --branch main --single-branch https://github.com/jdipper/homebridge-tuya.git
-cd homebridge-tuya
-npm ci
-npm run build
-npm pack --ignore-scripts
-```
-
-Copy the generated `.tgz` to the Homebridge host and install it using that host's
-plugin installation method. For a local npm-managed Homebridge installation,
-run the following from its storage directory, replacing the example path with
-the actual archive path:
-
-```sh
-npm install --save /absolute/path/to/generated-package.tgz
-```
-
-Restart the Tuya child bridge, or Homebridge if it does not use a child bridge.
-Keep the existing `TuyaPlatform` configuration. When replacing the upstream
-package, follow the migration steps above because the npm package name differs.
-
-### Upstream npm release
-
-Searching Homebridge's plugin catalogue for `@homebridge-plugins/homebridge-tuya`,
-or running `npm install @homebridge-plugins/homebridge-tuya`, installs the upstream
-release. To install this fork, use `@jdipper/homebridge-tuya` or build this
-repository.
-
-
-## Configuration
-
-There are two types of projects: `Custom` and `Smart Home`.
-The difference between them is:
-- The `Custom` project pulls devices from the project's assets.
-- The `Smart Home` project pulls devices from the user's home in the Tuya app.
-
-If you are a personal user and are unsure which one to choose, please use the `Smart Home` project.
-
-Before you can configure, you must go to the [Tuya IoT Platform](https://iot.tuya.com):
-- Create a cloud development project, and select the data center where your app account is located. See [Mappings Between OEM App Accounts and Data Centers](https://developer.tuya.com/en/docs/iot/oem-app-data-center-distributed?id=Kafi0ku9l07qb) or [Countries Regions and Tuya Data Center](https://github.com/tuya/tuya-home-assistant/wiki/Countries-Regions-and-Tuya-Data-Center)
-- Go to the `Project Page` > `Devices Panel` > `Link Tuya App Account`, and link your app account.
-- Go to the `Project Page` > `Service API` > `Go to Authorize`, and subscribe to the following APIs (it is free for trial):
-    - Authorization Token Management
-    - Device Status Notification
-    - IoT Core
-    - IoT Video Live Stream (for cameras)
-    - Industry Project Client Service (for the `Custom` project)
-    - IR Control Hub Open Service (for IR devices)
-    - Smart Home Scene Linkage (for scenes)
-    - Smart Lock Open Service (for Lock devices)
-- Check the active services and expiry dates in your Tuya cloud project. Access
-  must remain active for the plugin's cloud operations; trial and renewal terms
-  are managed by Tuya.
-
-#### For "Custom" Project
-
-- `platform` - **required** : Must be 'TuyaPlatform'.
-- `options.projectType` - **required** : Must be '1'
-- `options.endpoint` - **required** : The endpoint URL taken from the [API Reference > Endpoints](https://developer.tuya.com/en/docs/iot/api-request?id=Ka4a8uuo1j4t4#title-1-Endpoints) table.
-- `options.accessId` - **required** : The Access ID obtained from [Tuya IoT Platform > Cloud Develop](https://iot.tuya.com/cloud).
-- `options.accessKey` - **required** : The Access Secret obtained from [Tuya IoT Platform > Cloud Develop](https://iot.tuya.com/cloud).
-- `options.debug` - **optional**: Includes debugging output in the Homebridge log. (Default: `false`)
-- `options.debugLevel` - **optional**: An optional list of strings seperated with comma `,`. `api` represents for HTTP API log, `mqtt` represents for MQTT log, and device ID represents for device log. If blank, all logs are outputed.
-
-#### For "Smart Home" Project
-
-- `platform` - **required** : Must be 'TuyaPlatform'.
-- `options.projectType` - **required** : Must be '2'.
-- `options.accessId` - **required** : The Access ID obtained from [Tuya IoT Platform > Cloud Develop](https://iot.tuya.com/cloud).
-- `options.accessKey` - **required** : The Access Secret obtained from [Tuya IoT Platform > Cloud Develop](https://iot.tuya.com/cloud).
-- `options.countryCode` - **required** : The numeric country code of your developer account's region. You can find the country codes list [here](https://developer.tuya.com/en/docs/iot/oem-app-data-center-distributed?id=Kafi0ku9l07qb).
-- `options.username` - **required** : The mobile app (Tuya or SmartLife) account's username. Don't use the Tuya IoT Platform developer username.
-- `options.password` - **required** : The mobile app (Tuya or SmartLife) account's password. MD5 salted password is also available for increased security. Don't use the Tuya IoT Platform developer password.
-- `options.appSchema` - **required** : The app schema: 'tuyaSmart' for the Tuya Smart App, or 'smartlife' for the Smart Life App.
-- `options.endpoint` - **optional** : The endpoint URL can be inferred from the [API Reference > Endpoints](https://developer.tuya.com/en/docs/iot/api-request?id=Ka4a8uuo1j4t4#title-1-Endpoints) table based on the country code provided. Only manually set this value if you encounter login issues and need to specify the endpoint for your account location.
-- `options.homeWhitelist` - **optional**: An array of integer values for the home IDs you want to whitelist. If provided, only devices with matching Home IDs will be included. You can find the Home ID in the Homebridge log.
-- `options.debug` - **optional**: Includes debugging output in the Homebridge log. (Default: `false`)
-- `options.debugLevel` - **optional**: An optional list of strings seperated with comma `,`. `api` represents for API and MQTT log, device ID represents for specific device log. If blank, all logs are outputed.
-
-
-#### Advanced options
-See [ADVANCED_OPTIONS.md](./ADVANCED_OPTIONS.md)
-
-If your device has manufacturer-specific features that are not part of Tuya's standard device definition, enable `addExtraFeaturesAutomatically` in that device's `options.deviceOverrides` entry. The plugin will expose supported read/write non-standard datapoints in HomeKit as extra services: Boolean datapoints become switches, Enum datapoints become switches for their available values, and Integer datapoints become sliders.
-
-For example:
-
-```json
-{
-  "options": {
-    "deviceOverrides": [{
-      "id": "{device_id}",
-      "addExtraFeaturesAutomatically": true
-    }]
-  }
-}
-```
-
-This option applies only to the specified device and does not replace the standard accessory controls. For unsupported datapoint types, or when you need to control exactly which datapoints are exposed, use the `extra` and `extraRawSwitch` properties in the device schema. See [ADVANCED_OPTIONS.md](./ADVANCED_OPTIONS.md) for details.
-
-Garage door controllers that keep `switch_1=true` can opt in to contact-sensor-only state reads with `garageDoorUseContactSensorForState` in `options.deviceOverrides`. This keeps commands on `switch_1`, but reads HomeKit state from `doorcontact_state`.
-
-
-#### FastWarm thermostat programmes (experimental)
-
-For supported FastWarm ET-63 thermostats, the configuration page shows compact
-room cards using SmartLife room names, with optional local name overrides. Each
-room can have Home, Away and Holiday temperature programmes. Load each
-thermostat's stored programme into its own draft, or edit one shared programme
-for all or selected rooms. Saving drafts and reviewing/applying them are separate
-steps; loading does not change the heating. Apple Home household automations
-select Home/Away, with Holiday taking priority. See [setup, behaviour and current
-hardware-validation limits](docs/fastwarm-profiles.md).
-
-## Limitations
-- Tuya cloud API access must remain active; check the expiry dates in your project.
-- Using the same app account for multiple Homebridge/HomeAssistant instances is not supported. Please use separate app accounts for each instance.
-- The plugin requires an internet connection to the Tuya Cloud and does not support the LAN protocol. See [#90](https://github.com/homebridge-plugins/homebridge-tuya/issues/90) for more information.
-
-## FAQ
-
-#### About Login issue
-
-For most users, you can easily find your app account's data center through the [documentation](https://developer.tuya.com/en/docs/iot/oem-app-data-center-distributed?id=Kafi0ku9l07qb) and login without any issues. However, for some users, they may encounter error codes such as 1106 or 2406. If you encounter such errors, it's possible that there are differences between your data center and the documentation.
-
-To determine the data center, follow these steps:
-
-1. Open the app and navigate to "Me > Settings > Network Diagnosis".
-2. Start the diagnosis and select "Upload Log > Copy the Log to Clipboard".
-3. Paste the log anywhere and find the line beginning with "Region code:".
-4. Look for the following codes: "AY" for China, "AZ" for the West US, "EU" for Central Europe, and "IN" for India.
-
-Then manually specify endpoint in the plugin config.
-
-
-#### What is "Standard DP" and "Non-standard DP"?
-
-<!-- If your device is working properly, you don't need to know this. -->
-
-"Standard DP" refers to device properties or functionalities that are specified in the Tuya IoT Development Platform documentation at [Tuya IoT Development Platform Documentation > Cloud Development > Standard Instruction Set](https://developer.tuya.com/en/docs/iot/standarddescription?id=K9i5ql6waswzq).
-
-For example, a light bulb should have a standard DP code of `switch_led` for power on/off, and optional codes `bright_value`/`bright_value_v2` for brightness, `temp_value`/`temp_value_v2` for color temperature, and `work_mode` for changing the working mode. These codes can be found in the above documentation.
-
-If your light bulb can be adjusted in the Tuya app but not with the plugin, it most likely has "Non-standard DP."
-
-
-#### Can "Non-standard DP" be supportd by this plugin?
-
-Yes. The device must be listed in the support list and the following steps must be completed before it will work:
-1. Change the device's control mode on the Tuya Platform:
-  - Go to "[Tuya Platform Cloud Development](https://iot.tuya.com/cloud/) > Your Project > Devices > All Devices > View Devices by Product".
-  - Find the product related to your device, click the "pencil" icon (Change Control Instruction Mode).
-  - <img width="500" alt="image" src="https://user-images.githubusercontent.com/5144674/202967707-8b934e05-36d6-4b42-bb7b-87e5b24474c4.png">
-  - In the "Table of Instructions", you can see the cloud mapping and determine which DP codes are missing and need to be manually mapped later.
-  - <img width="500" alt="image" src="https://user-images.githubusercontent.com/5144674/202967528-4838f9a1-0547-4102-afbb-180dc9b198b1.png">
-  - Select "DP Instruction" and save.
-2. Override the device schema, see [ADVANCED_OPTIONS.md](./ADVANCED_OPTIONS.md).
-
-
-#### Local support
-See [#90](https://github.com/homebridge-plugins/homebridge-tuya/issues/90).
-
-Although the plugin didn't implemented tuya local protocol now, it still remains possibility in the future.
-
-
-## Troubleshooting
-
-If your device is not supported, please follow these steps to collect information.
-
-#### 1. Get Device Information
-
-After Homebridge has been successfully launched, the device information list will be saved in Homebridge's persist path. You can find the file path in the Homebridge log:
-
-New device-list exports omit local device keys, IP addresses and coordinates, redact other recognised credentials, and use owner-only file permissions. The next startup replaces an older export with a sanitised private file. Older exports and logs are not retroactively sanitised. Homebridge's `config.json` also contains account credentials; its permissions are managed by the Homebridge installation and should restrict access to the account running Homebridge.
-```
-[2022/11/3 18:37:43] [TuyaPlatform] Device list saved at /path/to/TuyaDeviceList.{uid}.json
-```
-
-**⚠️Please make sure to remove sensitive information such as `ip`, `lon`, `lat`, `local_key`, and `uid` before submitting the file.**
-
-
-#### 2. Enable Debug Mode
-
-Add debug option in the plugin config, then restart Homebridge.
-
-#### 3. Collect Logs
-
-With debug mode enabled, you can now receive MQTT logs. Operate your device, either physically or through the Tuya App, to receive MQTT logs like this:
-
-```
-[2022/12/8 12:51:59] [TuyaPlatform] [TuyaOpenMQ] onMessage:
-topic = cloud/token/in/xxx
-protocol = 4
-message = {
-  "dataId": "xxx",
-  "devId": "xxx",
-  "productKey": "xxx",
-  "status": [
-    {
-      "1": "double_click",
-      "code": "switch1_value",
-      "t": "1670475119766",
-      "value": "double_click"
-    }
-  ]
-}
-```
-
-If you are unable to receive any MQTT logs while controlling the device, it likely means that your device has "Non-standard DP".
-
-By submitting the device information JSON and MQTT logs, you can help us support new device categories.
-
-
-## Branches and upstream contributions
-
-| Branch | Purpose | Upstream PR base |
-| --- | --- | --- |
-| `main` | Combined build: temperatures, security fixes and fork-specific scheduling | Maintained in this fork |
-| `fix/security-hardening` | Credential handling, private diagnostic files, lock cancellation and dependency updates | `homebridge-plugins/homebridge-tuya:latest` |
-| `fix/fastwarm-room-temperature` | Measured temperature and native target reporting for FastWarm thermostats | `homebridge-plugins/homebridge-tuya:latest` |
-| `feat/fastwarm-native-schedules` | Scheduling development and investigation history | Maintained in this fork |
-
-To propose a fix upstream, use **Compare across forks** on the original
-repository. Select its `latest` branch as the base and the relevant `jdipper` fix
-branch as the head. Those branches contain no scheduling changes and remain
-independent of one another. GitHub compares the selected branches; the fork's
-default branch does not determine the PR contents.
-
-Make any reviewer-requested changes on the relevant fix branch, then merge that
-branch back into `main`. The scheduling editor, household controls and related
-runtime are maintained here and are not intended for the upstream PRs.
-
-### Development checks
-
-```sh
-npm ci
+npm install
 npm run lint
 npm run build
-npm test -- --runInBand --watchman=false --testPathIgnorePatterns test/home.test.ts test/custom.test.ts
+npm test -- --runInBand --watchman=false
 ```
 
-The excluded `home` and `custom` suites use a real Tuya account; the command above
-runs the offline test suite. Live investigations under `tools/` are separate from
-the ordinary tests and can issue real device commands when explicitly enabled.
+Wire-protocol tests and private provider tests run without accessing devices.
+The provider has no automatic startup, reconnect or report-triggered uploads.
 
-For general plugin development, see the
-[Homebridge development guide](https://github.com/homebridge/homebridge-plugin-template#setup-development-environment).
-
-## Attribution
-
-The broad Tuya device support and original configuration documentation come from
-[homebridge-plugins/homebridge-tuya](https://github.com/homebridge-plugins/homebridge-tuya),
-originally forked from `0x5e/homebridge-tuya-platform`. Upstream's published npm
-package and Homebridge verification apply to that project. Support its maintainer
-through [tassy-h's GitHub Sponsors page](https://github.com/sponsors/tassy-h).
+The security and measured-temperature changes remain separate from the private
+household/controller feature for upstream contributions. This fork is not a
+separately Homebridge-verified release.

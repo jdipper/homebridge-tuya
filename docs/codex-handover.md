@@ -11,7 +11,7 @@ the shared owner.
 | Component | Source | Last verified installed build, 17 November |
 | --- | --- | --- |
 | Heating Programmes | `jdipper/homebridge-heating-programmes` ([PR #2](https://github.com/jdipper/homebridge-heating-programmes/pull/2)) | `0.1.0-jdipper.9` |
-| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.10` |
+| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.11` |
 | Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (unchanged) |
 
 The earlier household-transition updates were merged before their installation:
@@ -47,12 +47,29 @@ were backed up and preserved. The programme-delivery follow-up below supersedes
 that Tuya build; Heating Programmes and Hive remain unchanged. These local builds
 have not been published to npm.
 
-## FastWarm LAN pilot (version `.11`)
+## FastWarm LAN pilot (installed `.11`; setup UI follow-up `.12`)
 
 `feat/fastwarm-lan-control` adds an optional transport inside the existing Tuya
 provider. The initial rollout is restricted to one thermostat. Other FastWarm
 thermostats and Hive retain their existing connections; shared controller code,
 programme policy and grouped Home/Holiday controls are unchanged.
+
+The `.11` pilot was installed from checked archive SHA-256
+`c5009ab72e64bf46b9433e7c1110a532efda97b5e0aa569653542b608405adc1`,
+built from `e00d75c9ff1cfa42973cb0cb064d1dc9ea6505dd`. Static verification
+confirmed one LAN thermostat and five cloud thermostats, with keys, configuration,
+profiles, history and pairings preserved and unchanged Shared/Hive processes.
+One subsequent read verified all **168 native periods and six fresh Home targets**
+against the captured weeks. It issued no heating-value commands; five cloud
+`inquire=true` requests are semantic reads recorded as control traffic by the
+existing API meter. Home remained on and Holiday off.
+
+The live setup page exposed an identifier mismatch: Homebridge removes `_bridge`
+before constructing a child platform, while the page hashed raw configuration
+including that field. The running LAN connection and private key were correct,
+but the page reported a missing key. `.12` corrects only the UI's derivation,
+matching the existing provider identity without moving keys or changing runtime
+control code. A new immutable release is used for this follow-up.
 
 See [local control](fastwarm-local-control.md) for configuration, key storage,
 transport ownership and validation limits. The implementation uses Node's built-in

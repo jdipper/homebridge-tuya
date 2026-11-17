@@ -1,9 +1,9 @@
-import {createHash} from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import vm from 'vm';
 import * as helpers from '../src/device/lan/FastWarmLanConfiguration';
+import {TuyaPlatform} from '../src/platform';
 import {
   createLocalSetupHandlers, configuredDevices, instanceIdForPlatform, readConfiguration, ERROR_MESSAGE,
 } from '../homebridge-ui/server';
@@ -16,6 +16,14 @@ const platform = () => ({platform: 'TuyaPlatform', name: 'Tuya', _bridge: {usern
   projectType: '2', endpoint: 'https://endpoint.invalid', accessId: 'ACCESS_ID_CANARY', accessKey: KEY,
   username: ACCOUNT, password: 'PASSWORD_CANARY', fastWarmLocalDevices: [{...local}],
 }});
+
+function childRuntimeInstance(raw: object): string {
+  // Homebridge childBridgeFork.loadPlugin removes _bridge before constructing the plugin.
+  const config = structuredClone(raw) as {options: object; _bridge?: unknown};
+  delete config._bridge;
+  const runtime = Object.assign(Object.create(TuyaPlatform.prototype), {config, options: config.options});
+  return runtime.programmeInstanceId();
+}
 
 describe('private FastWarm LAN setup routes', () => {
   let directory: string;
@@ -46,14 +54,25 @@ describe('private FastWarm LAN setup routes', () => {
     }
   }
 
-  test('instance identity exactly matches provider field order and bridge/name fallback', () => {
-    for (const entry of [platform(), {...platform(), _bridge: undefined}]) {
-      const options = entry.options;
-      const expected = createHash('sha256').update(JSON.stringify({projectType: options.projectType,
-        endpoint: options.endpoint, accessId: options.accessId, username: options.username,
-        bridge: entry._bridge?.username ?? entry.name})).digest('hex').slice(0, 16);
-      expect(instanceIdForPlatform(entry)).toBe(expected);
+  test('raw child-bridge configuration resolves to the actual normalized platform identity', () => {
+    const raw = platform();
+    for (const entry of [raw, {...raw, _bridge: {username: 'AA:BB:CC:DD:EE:99'}}, {...raw, _bridge: undefined}]) {
+      expect(instanceIdForPlatform(entry)).toBe(childRuntimeInstance(entry));
     }
+  });
+
+  test('finds and updates an existing runtime key without creating a second raw-bridge namespace', async () => {
+    const runtimeId = childRuntimeInstance(platform());
+    const persist = path.join(directory, 'persist');
+    const store = new helpers.FastWarmLanKeyStore(persist, runtimeId);
+    await store.set(local.deviceId, KEY);
+    const result = await handlers['/local/devices']();
+    expect(result).toEqual({devices: [{instanceId: runtimeId, ...local, enabled: true, keyStored: true}]});
+    noSecrets(result);
+    await expect(handlers['/local/key']({instanceId: runtimeId, deviceId: local.deviceId, localKey: KEY}))
+      .resolves.toEqual({stored: true, restartRequired: true});
+    expect(await fs.readdir(persist)).toEqual([`FastWarmLocalKeys.${runtimeId}.json`]);
+    expect(await store.read(local.deviceId)).toBe(KEY);
   });
 
   test('lists configured connection metadata and a Boolean key status only', async () => {

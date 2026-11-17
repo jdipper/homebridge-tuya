@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.7.3-jdipper.12] - (2026.11.17)
+
+### Fixed
+- Derive the local-key setup UI identifier from the configuration Homebridge actually passes to child platforms, so an existing private key is detected and key imports use the running provider's namespace. Runtime identities and keys stay unchanged.
+
 ## [2.7.3-jdipper.11] - (2026.11.17)
 
 ### Added

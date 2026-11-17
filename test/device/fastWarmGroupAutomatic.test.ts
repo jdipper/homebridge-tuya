@@ -30,7 +30,9 @@ async function fixture(options: {partialInquiry?: string; groupAck?: unknown; ne
     {code: 'temp_unit_convert', value: 'c'}, {code: 'temp_current', value: 180}, {code: 'temp_set', value: 200},
   ]}));
   const native = new Map(ids.map(id => [id, programmeToFastWarm(week())]));
-  let listener: any, connected = true, controlsHook: ((id: string) => void) | undefined;
+  const listeners = new Set<any>();
+  const listener = (...args: any[]) => {for (const value of listeners) value(...args);};
+  let connected = true, controlsHook: ((id: string) => void) | undefined;
   let members: any = {page_no: 1, page_size: 20, count: 6,
     data_list: ids.map(device_id => ({device_id, group_id: group.groupId}))};
   let schema: any = [{code: 'inquire', type: 'bool'}, {code: 'week_program', type: 'raw', type_desc: '{"maxlen":128}'}];
@@ -47,7 +49,7 @@ async function fixture(options: {partialInquiry?: string; groupAck?: unknown; ne
     }
   };
   const connections = new Set<any>();
-  const mq: any = {addRawMessageListener: (value: any) => {listener = value;}, removeRawMessageListener: () => undefined,
+  const mq: any = {addRawMessageListener: (value: any) => listeners.add(value), removeRawMessageListener: (value: any) => listeners.delete(value),
     addConnectionListener: (value: any) => connections.add(value), removeConnectionListener: (value: any) => connections.delete(value),
     isConnected: () => connected};
   const api: any = {
@@ -58,7 +60,7 @@ async function fixture(options: {partialInquiry?: string; groupAck?: unknown; ne
         calls.push({kind: 'schema'}); return {success: true, result: schema};
       }
       const id = route.split('/')[4]; calls.push({kind: 'controls', id}); controlsHook?.(id);
-      expect(params.codes).toBe('ControlMode,Event_Adaptive_Set');
+      expect(params.codes).toBe('ControlMode,Event_Adaptive_Set,SetTemp');
       return {success: true, result: {properties: [{code: 'ControlMode', value: 'smart'}, {code: 'Event_Adaptive_Set', value: 0}]}};
     }),
     postOnce: jest.fn(async (route: string, body: any, requestOptions: any) => {

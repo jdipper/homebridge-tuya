@@ -8,7 +8,7 @@ import { writePrivateJson } from '../../util/PrivateFile';
 interface Descriptor {
   version: 1; protocolVersion: 1; plugin: '@jdipper/homebridge-tuya';
   instanceId: string; socketPath: string; token: string; pid: number;
-  capabilities?: {automaticFreshBaseline: true; automaticCancellation: true};
+  capabilities?: {automaticFreshBaseline?: true; automaticCancellation?: true; activeTargetAlignment: true};
 }
 type Handler = (route: string, body: Record<string, unknown>) => Promise<unknown>;
 const ROUTES = ['/provider/list', '/provider/refresh', '/provider/read', '/provider/prepare', '/provider/apply',
@@ -110,7 +110,8 @@ export default class TuyaProgrammeProviderServer {
     const descriptor: Descriptor = {
       version: 1, protocolVersion: 1, plugin: '@jdipper/homebridge-tuya', instanceId: this.instanceId,
       socketPath, token: randomBytes(32).toString('hex'), pid: process.pid,
-      ...(this.automaticFreshBaseline ? {capabilities: {automaticFreshBaseline: true as const, automaticCancellation: true as const}} : {}),
+      capabilities: {activeTargetAlignment: true, ...(this.automaticFreshBaseline
+        ? {automaticFreshBaseline: true as const, automaticCancellation: true as const} : {})},
     };
     const server = createServer((request, response) => {
       void this.onRequest(request, response, descriptor);

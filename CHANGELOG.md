@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.7.3-jdipper.9] - (2026.11.17)
+
+### Fixed
+- Align FastWarm’s current target to the active period after a verified programme selection, retaining Smart mode and the native weekly schedule. Require fresh target confirmation; stop obsolete or conflicting commands and never replay uncertain writes.
+- Include native target readings in the existing control checks, with bounded read-only convergence after delayed device reports. Preserve grouped programme packets and their processing interval. See [active-target behaviour](docs/fastwarm-active-target.md).
+
 ## [2.7.3-jdipper.8] - (2026.11.17)
 
 ### Fixed

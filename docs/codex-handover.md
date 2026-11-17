@@ -23,6 +23,11 @@ source snapshot on `main`, followed by this port on its feature branch. Private
 workspace history, runtime files and installation receipts are not published.
 Public commit authors use the GitHub handle and noreply address.
 
+In the existing workspace, the publishable Git checkouts are
+`public-repositories/homebridge-heating-programmes` and
+`public-repositories/homebridge-tuya`. The older local repositories retain private
+history for reference only; do not push all their branches or their old history.
+
 The original Holiday work remains available in
 [Tuya draft PR #1](https://github.com/jdipper/homebridge-tuya/pull/1), branch
 `fix/holiday-programme-transitions`, checkpoint

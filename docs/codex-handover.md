@@ -11,7 +11,7 @@ the shared owner.
 | Component | Source | Last verified installed build, 17 November |
 | --- | --- | --- |
 | Heating Programmes | `jdipper/homebridge-heating-programmes` ([PR #2](https://github.com/jdipper/homebridge-heating-programmes/pull/2)) | `0.1.0-jdipper.9` |
-| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.11` |
+| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.12` |
 | Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (unchanged) |
 
 The earlier household-transition updates were merged before their installation:
@@ -47,7 +47,7 @@ were backed up and preserved. The programme-delivery follow-up below supersedes
 that Tuya build; Heating Programmes and Hive remain unchanged. These local builds
 have not been published to npm.
 
-## FastWarm LAN pilot (installed `.11`; setup UI follow-up `.12`)
+## FastWarm LAN pilot (installed `.12`)
 
 `feat/fastwarm-lan-control` adds an optional transport inside the existing Tuya
 provider. The initial rollout is restricted to one thermostat. Other FastWarm
@@ -70,6 +70,26 @@ including that field. The running LAN connection and private key were correct,
 but the page reported a missing key. `.12` corrects only the UI's derivation,
 matching the existing provider identity without moving keys or changing runtime
 control code. A new immutable release is used for this follow-up.
+
+The `.12` follow-up was installed from archive SHA-256
+`d6652472f014f4a5a6537e6d61f3f3a5ac483b67302e22b98a335ff0d2f13463`,
+built from `9d49dacbcb66117f4bb4abba78f406182f9cdd4a`. All compiled runtime
+files are byte-identical to `.11`; package metadata changes only the version.
+The static verifier confirmed the unchanged local selection and private key,
+existing group/pairing identities and unchanged Shared/Hive processes. Both the
+server handler and the live setup page now recognise the existing private key.
+No key migration or thermostat command was required for the UI correction.
+The 20 UI tests and 57 UI deployment checks pass. These installed archives
+remain immutable; subsequent handover edits record deployment evidence only.
+
+After the `.12` restart, a new single read verified all 168 native periods and
+six fresh Home target confirmations again. Original native fingerprints, saved
+profiles, policy, programme history and grouped control identities were retained.
+The final check used one local thermostat and five cloud thermostats; its only
+cloud control traffic was the five semantic inquiry requests. No programme,
+target, power or mode command was sent during either installation. Home remains
+on and Holiday off. Broad multi-period LAN delivery and physical WAN-disconnect
+startup still require separate bounded hardware validation.
 
 See [local control](fastwarm-local-control.md) for configuration, key storage,
 transport ownership and validation limits. The implementation uses Node's built-in

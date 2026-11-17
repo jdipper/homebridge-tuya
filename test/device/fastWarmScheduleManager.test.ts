@@ -266,7 +266,9 @@ describe('FastWarm programme transport', () => {
       }
       return original(...args);
     });
-    const result = await manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint! });
+    const pending = manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint! });
+    await jest.advanceTimersByTimeAsync(1000);
+    const result = await pending;
     expect(result.status).toBe('partial');
     expect(result.applied).toBe(1);
     expect(result.planned).toBe(4);

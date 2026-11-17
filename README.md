@@ -82,6 +82,13 @@ never generated. Acknowledgement alone does not prove support: unchanged writes
 can appear successful even if firmware ignores them. Failed or unconfirmed
 grouped uploads never fall back to another write format automatically.
 
+Consecutive programme packets for the same thermostat wait at least one second
+after the preceding cloud acknowledgement. This gives native processing time
+between period updates without adding API requests. The first packet is sent
+without this wait; grouped packet planning and complete-week verification remain
+in place. A subsequent operation still honours any remaining interval from an
+earlier packet for that thermostat. See [delivery behaviour and validation limits](docs/fastwarm-programme-delivery.md).
+
 ### Shared requests across thermostats
 
 `options.fastWarmProgrammeGroups` can opt in an existing Tuya group after a

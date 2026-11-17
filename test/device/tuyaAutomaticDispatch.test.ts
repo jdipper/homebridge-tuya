@@ -45,6 +45,7 @@ async function fixture(blockAuth = true) {
     }
   });
   const sent: {path: string; method: string; properties?: any}[] = [];
+  let writeHook: (() => void) | undefined;
   const emit = (packet: any) => raw('test', 4, {devId: device.id, status: [{code: 'week_program',
     value: encodeFastWarmSchedule(packet), t: Date.now()}]}, Date.now());
   const send = jest.spyOn(https, 'request').mockImplementation(((options: any, callback: any) => {
@@ -66,6 +67,7 @@ async function fixture(blockAuth = true) {
         }
         // Device acknowledgements can echo our first packet before its HTTP ACK.
         emit(packet);
+        writeHook?.();
       }
       const response: any = new EventEmitter(); response.statusCode = 200; response.setEncoding = () => undefined;
       callback(response); response.emit('data', JSON.stringify({success: true, result, t: Date.now(), tid: 'fixture'})); response.emit('end');
@@ -83,6 +85,8 @@ async function fixture(blockAuth = true) {
     prepare: async (desired = programme(12)) => (await call('/provider/prepare-automatic',
       {deviceId: device.id, programme: desired, requireScheduled: true})).preview,
     apply: (token: string) => call('/provider/apply-automatic', {token}),
+    cancel: (token: string) => call('/provider/cancel-automatic', {token}),
+    onWrite: (hook: () => void) => {writeHook = hook;},
     edit: () => {native.days[1].events[1].temperature = 18; emit({dayMask: 2, events: [native.days[1].events[1]]});},
     gap: () => {for (const value of [false, true]) {connected = value;
       for (const listener of connections) listener({connected: value, recoveryRequired: true});}},
@@ -117,4 +121,31 @@ test('our first packet echo does not invalidate subsequent packets in the same v
   expect(data.sent.filter(request => request.properties?.week_program)).toHaveLength(2);
   expect(data.sent).toHaveLength(6);
   expect(data.native).toEqual(programmeToFastWarm(programme(12, 10)));
+});
+
+test('a newer household selection cancels an upload waiting for authentication without transmitting its native packet', async () => {
+  const data = await fixture(), preview = await data.prepare();
+  const applying = data.apply(preview.token); await data.entered.promise;
+  expect(await data.cancel(preview.token)).toMatchObject({cancelled: true, notApplied: false});
+  data.release.resolve();
+  expect((await applying).result).toMatchObject({status: 'not-applied', writeAttempted: false, superseded: true});
+  expect(data.sent.filter(request => request.properties?.week_program)).toHaveLength(0);
+  expect(data.native).toEqual(programmeToFastWarm(programme()));
+  await expect(data.apply(preview.token)).rejects.toThrow('consumed');
+});
+
+test('a submitted event finishes but later obsolete events stop, and the next selection reads and verifies its own baseline', async () => {
+  const data = await fixture(false), preview = await data.prepare(programme(12, 10));
+  let cancelled = false;
+  data.onWrite(() => {if (!cancelled) {cancelled = true; void data.cancel(preview.token);}});
+  const result = (await data.apply(preview.token)).result;
+  expect(result).toMatchObject({status: 'unconfirmed', writeAttempted: true, superseded: true});
+  expect(data.sent.filter(request => request.properties?.week_program)).toHaveLength(1);
+  expect(data.native).toEqual(programmeToFastWarm(programme(12, 12)));
+  expect(data.sent.some(request => request.properties?.ControlMode)).toBe(false);
+  const latest = await data.prepare(programme(16, 12));
+  expect((await data.apply(latest.token)).result).toMatchObject({status: 'confirmed', writeAttempted: true});
+  expect(data.native).toEqual(programmeToFastWarm(programme(16, 12)));
+  expect(data.sent.filter(request => request.properties?.week_program)).toHaveLength(2);
+  await expect(data.apply(preview.token)).rejects.toThrow('consumed');
 });

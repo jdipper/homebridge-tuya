@@ -9,7 +9,7 @@ import {
   collectFastWarmSchedule, encodeFastWarmSchedule, FASTWARM_SCHEDULE_DAYS, FastWarmScheduleEventId,
   FastWarmScheduleState,
 } from './FastWarmSchedule';
-import FastWarmScheduleManager, { FastWarmProgrammeWriteMode, FastWarmScheduleSnapshot } from './FastWarmScheduleManager';
+import FastWarmScheduleManager, { FastWarmProgrammeWriteMode, FastWarmScheduleSnapshot, FastWarmSelectionSuperseded } from './FastWarmScheduleManager';
 import TuyaProgrammeProviderServer from './TuyaProgrammeProviderServer';
 import { FastWarmProgrammeGroup } from './FastWarmGroupCommandBroker';
 
@@ -29,7 +29,7 @@ export interface TuyaProgrammeProviderOptions {
 }
 interface AutomaticLease {
   token: string; deviceId: string; programme: WeeklyProgramme; managerToken: string;
-  backup: FastWarmScheduleSnapshot; expiresAt: number; consumed: boolean;
+  backup: FastWarmScheduleSnapshot; expiresAt: number; consumed: boolean; cancelled: boolean;
   proceed: (apply: boolean) => void; result: Promise<unknown>;
 }
 interface DeviceObservation {
@@ -153,6 +153,7 @@ export default class TuyaProgrammeProvider {
     }
     this.previews.clear();
     for (const lease of this.automaticLeases.values()) {
+      lease.cancelled = true;
       lease.proceed(false);
     }
     this.schedules.close();
@@ -191,6 +192,21 @@ export default class TuyaProgrammeProvider {
         lease.consumed = true;
         lease.proceed(true);
         return reply({automaticFreshBaseline: true, result: await lease.result});
+      }
+      case '/provider/cancel-automatic': {
+        if (typeof body.token !== 'string' || !/^[a-f0-9-]{36}$/.test(body.token)
+          || Object.keys(body).some(key => key !== 'token')) {
+          throw new Error('An owned automatic preview token is required.');
+        }
+        // This route must not wait for the per-device queue held by apply. It
+        // changes only this one-shot lease; an already submitted command finishes.
+        const lease = this.automaticLeases.get(body.token);
+        const notApplied = Boolean(lease && !lease.consumed);
+        if (lease) {
+          lease.cancelled = true;
+          if (!lease.consumed) {lease.consumed = true; lease.proceed(false);}
+        }
+        return reply({cancelled: Boolean(lease), notApplied});
       }
       case '/provider/discard': {
         if (typeof body.token !== 'string' || Object.keys(body).some(key => key !== 'token')) {
@@ -349,7 +365,7 @@ export default class TuyaProgrammeProvider {
         resolveSignal = resolve;
       });
       const lease: AutomaticLease = {token, deviceId: id, programme, managerToken: baseline.token,
-        backup: baseline.backup, expiresAt, consumed: false, proceed: value => resolveSignal(value), result};
+        backup: baseline.backup, expiresAt, consumed: false, cancelled: false, proceed: value => resolveSignal(value), result};
       this.automaticLeases.set(token, lease);
       const timer = setTimeout(() => lease.proceed(false), Math.max(1, expiresAt - Date.now())); timer.unref();
       prepared = true;
@@ -357,7 +373,7 @@ export default class TuyaProgrammeProvider {
         changesRequired: JSON.stringify(canonical(baseline.backup.state)) !== JSON.stringify(programme),
         requireScheduled: true, automaticFreshBaseline: true});
       try {
-        if (!await signal || this.closed || Date.now() >= expiresAt) {
+        if (!await signal || lease.cancelled || this.closed || Date.now() >= expiresAt) {
           resolveResult!({status: 'not-applied', reason: 'The automatic selection was cancelled or expired.', writeAttempted: false});
         } else {
           resolveResult!(await this.applyAutomaticOwned(lease));
@@ -417,6 +433,7 @@ export default class TuyaProgrammeProvider {
     try {
       const result = await this.schedules.applyAutomatic!(id, {token: lease.managerToken,
         draft: programmeToFastWarm(lease.programme), writeMode: this.writeModes.get(id) ?? 'single-events',
+        isCurrent: () => !this.closed && !lease.cancelled,
         beforeApply: async (backup, planned) => {
           if (planned) {
             journal = {version: 1, operationId: lease.token, deviceId: id, startedAt: Date.now(),
@@ -429,6 +446,7 @@ export default class TuyaProgrammeProvider {
           if (this.closed || Date.now() >= lease.expiresAt || initial.mode !== 'smart') {
             throw new Error('Automatic changes require fresh Scheduled mode and an unexpired owned baseline.');
           }
+          if (lease.cancelled) throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
           writePossible = planned > 0;
         },
       });
@@ -436,18 +454,25 @@ export default class TuyaProgrammeProvider {
       const writeAttempted = result.applied > 0 || result.unknownOutcome === true;
       readback = this.zone(id);
       let outcome;
-      if (result.status !== 'verified' && result.status !== 'no_changes') {
+      let controlsConfirmed = false;
+      if (lease.cancelled || (result.status !== 'verified' && result.status !== 'no_changes')) {
         outcome = {status: result.status === 'conflict' ? 'conflict'
           : result.unknownOutcome ? 'unknown' : writeAttempted ? 'unconfirmed' : 'not-applied',
         reason: result.error ?? 'The complete programme was not confirmed. Do not automatically retry.', writeAttempted, readback};
       } else {
         const latest = result.status === 'no_changes' ? initial! : await this.readSettings(id);
         readback = this.zone(id);
-        outcome = initial && latest.mode === 'smart' && latest.mode === initial.mode && latest.grouping === initial.grouping
-          && readback.programme && JSON.stringify(readback.programme) === JSON.stringify(lease.programme) && readback.scheduled
+        controlsConfirmed = Boolean(initial && latest.mode === 'smart' && latest.mode === initial.mode && latest.grouping === initial.grouping
+          && readback.programme && JSON.stringify(readback.programme) === JSON.stringify(lease.programme) && readback.scheduled);
+        outcome = !lease.cancelled && controlsConfirmed
           ? {status: 'confirmed', reason: 'The complete programme and fresh Scheduled controls are confirmed.', writeAttempted, readback}
           : {status: 'conflict', reason: 'The mode, grouping or complete native week changed during automatic application.',
             writeAttempted, readback};
+      }
+      if (lease.cancelled && (result.superseded === true || controlsConfirmed)
+        && !result.unknownOutcome && outcome.status !== 'confirmed' && outcome.status !== 'unknown') {
+        outcome = {...outcome, superseded: true,
+          reason: 'The automatic selection was superseded. Any submitted command finished; remaining commands were cancelled.'};
       }
       if (journal) {
         await this.automaticJournal(lease.token,

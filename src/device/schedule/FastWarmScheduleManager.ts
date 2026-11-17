@@ -29,6 +29,8 @@ export interface FastWarmScheduleApplyResult {
   applied: number;
   error?: string;
   unknownOutcome?: boolean;
+  /** A local cancellation guard stopped unsent commands; no failed/unknown native write is covered. */
+  superseded?: boolean;
   /** Readback inquiries attempted after the writes; these never replay a programme command. */
   verificationReads?: number;
 }
@@ -67,6 +69,8 @@ export interface FastWarmAutomaticApplyRequest {
   writeMode?: FastWarmProgrammeWriteMode;
   /** Must persist the fresh backup and validate current controls before any command. */
   beforeApply: (backup: FastWarmScheduleSnapshot, planned: number) => Promise<void>;
+  /** Household cancellation is independent of native report changes caused by our own writes. */
+  isCurrent?: () => boolean;
 }
 interface AutomaticPreparation extends FastWarmAutomaticPreparation {
   deviceId: string;
@@ -333,7 +337,7 @@ export default class FastWarmScheduleManager {
             if (!this.ownedBaselineUnchanged(prepared)) {
               throw new Error('The native programme or message connection changed before automatic upload; no schedule was sent.');
             }
-          }, true, () => this.ownedBaselineUnchanged(prepared), true);
+          }, true, () => this.ownedBaselineUnchanged(prepared), true, request.isCurrent);
       } finally {
         if (this.automaticBaselines.get(deviceId) === prepared) {
           this.automaticBaselines.delete(deviceId);
@@ -365,7 +369,7 @@ export default class FastWarmScheduleManager {
   private async applyFromBackup(deviceId: string, draft: FastWarmScheduleState, backup: FastWarmScheduleSnapshot,
     expectedFingerprint: string | undefined, writeMode: FastWarmProgrammeWriteMode | undefined,
     beforeWrite?: (backup: FastWarmScheduleSnapshot, planned: number) => Promise<void>, guardNoChanges = false,
-    beforeFirstDispatch?: () => boolean, allowGroup = false,
+    beforeFirstDispatch?: () => boolean, allowGroup = false, isCurrent?: () => boolean,
   ): Promise<FastWarmScheduleApplyResult> {
     if (!backup.fingerprint) {
       return { status: 'failed', backup, planned: 0, applied: 0, error: 'Could not read a complete fresh backup; no schedule was sent.' };
@@ -379,10 +383,13 @@ export default class FastWarmScheduleManager {
     }
 
     try {
+      if (isCurrent?.() === false) throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
       await beforeWrite?.(backup, commands.length);
+      if (isCurrent?.() === false) throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
     } catch (error) {
       return { status: 'conflict', backup, planned: commands.length, applied: 0,
-        error: errorText(error), unknownOutcome: false };
+        error: errorText(error), unknownOutcome: false,
+        ...(error instanceof FastWarmSelectionSuperseded ? {superseded: true} : {}) };
     }
 
     if (commands.length === 0) {
@@ -391,17 +398,22 @@ export default class FastWarmScheduleManager {
     let applied = 0;
     let writeError: string | undefined;
     let unknownOutcome = false;
+    let superseded = false;
     for (const command of commands) {
       let submitted = false;
       try {
         this.requireDevice(deviceId);
+        if (isCurrent?.() === false) throw new FastWarmSelectionSuperseded('The automatic selection was superseded; remaining commands were not sent.');
         submitted = true;
-        await this.issue(deviceId, { week_program: command.payload }, applied === 0 ? beforeFirstDispatch : undefined,
+        const shouldProceed = () => isCurrent?.() !== false && (applied !== 0 || beforeFirstDispatch?.() !== false);
+        await this.issue(deviceId, { week_program: command.payload }, isCurrent || (applied === 0 && beforeFirstDispatch) ? shouldProceed : undefined,
           allowGroup && commands.length === 1);
         applied++;
       } catch (error) {
         writeError = errorText(error);
         unknownOutcome = submitted && !(error instanceof ScheduleCommandRejected) && !(error instanceof FastWarmGroupCommandRejected);
+        superseded = error instanceof FastWarmSelectionSuperseded
+          || (isCurrent?.() === false && (error instanceof ScheduleCommandNotSent || error instanceof FastWarmGroupCommandRejected));
         break;
       }
     }
@@ -429,11 +441,12 @@ export default class FastWarmScheduleManager {
     if (writeError) {
       return {
         status: applied > 0 ? 'partial' : 'failed', backup, readback, planned: commands.length, applied,
-        error: writeError, unknownOutcome, verificationReads,
+        error: writeError, unknownOutcome, verificationReads, ...(superseded && !unknownOutcome ? {superseded: true} : {}),
       };
     }
     if (readback?.fingerprint === targetFingerprint) {
-      return { status: 'verified', backup, readback, planned: commands.length, applied, verificationReads };
+      return { status: 'verified', backup, readback, planned: commands.length, applied, verificationReads,
+        ...(isCurrent?.() === false ? {superseded: true} : {}) };
     }
     return {
       status: 'unverified', backup, readback, planned: commands.length, applied,
@@ -521,9 +534,14 @@ export default class FastWarmScheduleManager {
         guard, () => this.issue(deviceId, properties, guard));
       return;
     }
+    let blocked = false;
+    const dispatchGuard = shouldProceed && (() => {
+      const allowed = shouldProceed(); if (!allowed) blocked = true; return allowed;
+    });
     const response = await this.api.postOnce(`/v2.0/cloud/thing/${deviceId}/shadow/properties/issue`, {
       properties: JSON.stringify(properties),
-    }, { timeoutMs: this.commandTimeoutMs, ...(shouldProceed === undefined ? {} : { shouldProceed }) });
+    }, { timeoutMs: this.commandTimeoutMs, ...(dispatchGuard === undefined ? {} : { shouldProceed: dispatchGuard }) });
+    if (blocked) throw new ScheduleCommandNotSent('The local command guard stopped transmission.');
     if (response.success !== true) {
       throw new ScheduleCommandRejected(`${response.code}: ${response.msg}`);
     }
@@ -621,3 +639,5 @@ export default class FastWarmScheduleManager {
 }
 
 class ScheduleCommandRejected extends Error {}
+class ScheduleCommandNotSent extends ScheduleCommandRejected {}
+export class FastWarmSelectionSuperseded extends ScheduleCommandRejected {}

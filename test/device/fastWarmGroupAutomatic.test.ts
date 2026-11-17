@@ -114,6 +114,32 @@ test('six owned automatic operations use three group commands and 19 cold calls,
   expect(data.calls.some(call => call.properties?.ControlMode || call.properties?.switch !== undefined)).toBe(false);
 });
 
+test('cancelling a grouped cohort during authentication stops the group packet without individual-write fallback', async () => {
+  const data = await fixture(), prepared = await data.prepare();
+  data.onPostAuth(() => {for (const preview of prepared) void data.call('/provider/cancel-automatic', {token: preview.token});});
+  const results = await data.apply(prepared);
+  expect(results.every(result => result.status === 'not-applied' && !result.writeAttempted && result.superseded === true)).toBe(true);
+  expect(data.calls.some(call => call.kind === 'group-write' || call.kind === 'write')).toBe(false);
+  for (const native of data.native.values()) expect(native).toEqual(programmeToFastWarm(week()));
+});
+
+test('an ambiguous group network failure cannot become known supersession when a newer intent arrives', async () => {
+  const data = await fixture({networkWriteError: true}), prepared = await data.prepare();
+  const original = data.api.postOnce.getMockImplementation()!;
+  data.api.postOnce.mockImplementation(async (...args: any[]) => {
+    try {return await original(...args);}
+    finally {
+      if (JSON.parse(args[1].properties).week_program) {
+        await Promise.all(prepared.map(preview => data.call('/provider/cancel-automatic', {token: preview.token})));
+      }
+    }
+  });
+  const results = await data.apply(prepared);
+  expect(results.every(result => result.status === 'unknown' && result.writeAttempted && result.superseded !== true)).toBe(true);
+  expect(data.calls.filter(call => call.kind === 'group-write')).toHaveLength(1);
+  expect(data.calls.filter(call => call.kind === 'write')).toHaveLength(0);
+});
+
 test('an incomplete five-room cohort times out into individual operations before any group dispatch', async () => {
   const data = await fixture(), results = await data.apply(await data.prepare(ids.slice(0, 5)));
   expect(results.every(result => result.status === 'confirmed')).toBe(true);

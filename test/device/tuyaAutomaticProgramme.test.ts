@@ -125,6 +125,44 @@ test('an automatic apply token can be consumed only once, including while its co
   expect(data.calls.filter(call => call.kind === 'write')).toHaveLength(1);
 });
 
+test('cancelling a prepared automatic lease releases its queue without consuming a later manual preview', async () => {
+  const data = await fixture(), preview = await data.prepare();
+  expect(await data.call('/provider/cancel-automatic', {token: preview.token})).toMatchObject({cancelled: true, notApplied: true});
+  await data.call('/provider/read', {deviceId: data.device.id});
+  expect(data.calls.filter(call => call.kind === 'write')).toHaveLength(0);
+  await expect(data.call('/provider/apply-automatic', {token: preview.token})).rejects.toThrow('consumed');
+  expect(await data.call('/provider/cancel-automatic', {token: preview.token})).toMatchObject({cancelled: false, notApplied: false});
+  const manual = await data.call('/provider/prepare', {deviceId: data.device.id, programme: week()});
+  expect(await data.call('/provider/cancel-automatic', {token: manual.preview.token})).toMatchObject({cancelled: false});
+  expect((await data.call('/provider/apply', {token: manual.preview.token})).result.status).toBe('confirmed');
+  expect(data.calls.filter(call => call.kind === 'write')).toHaveLength(0);
+});
+
+test('malformed cancellation requests fail before any cloud operation', async () => {
+  const data = await fixture();
+  for (const body of [{}, {token: 'bad'}, {token: 'a'.repeat(36), deviceId: data.device.id}]) {
+    await expect(data.call('/provider/cancel-automatic', body)).rejects.toThrow('owned automatic preview token');
+  }
+  expect(data.calls).toEqual([]);
+});
+
+test.each(['native rejection', 'unknown network write'])('cancellation cannot relabel %s as known supersession', async kind => {
+  const data = await fixture({unknownWrite: kind === 'unknown network write'}), preview = await data.prepare();
+  const original = data.api.postOnce.getMockImplementation()!;
+  data.api.postOnce.mockImplementation(async (...args: any[]) => {
+    const writing = Boolean(JSON.parse(args[1].properties).week_program);
+    if (writing && kind === 'native rejection') {
+      await data.call('/provider/cancel-automatic', {token: preview.token});
+      return {success: false, code: 'NATIVE_REJECTED', msg: 'Native write rejected'};
+    }
+    try {return await original(...args);}
+    finally {if (writing) await data.call('/provider/cancel-automatic', {token: preview.token});}
+  });
+  const result = (await data.call('/provider/apply-automatic', {token: preview.token})).result;
+  expect(result.status).not.toBe('confirmed'); expect(result.superseded).toBeUndefined();
+  if (kind === 'unknown network write') expect(result).toMatchObject({status: 'unknown', writeAttempted: true});
+});
+
 test.each(['hold', 'auto'])('a fresh %s mode is never cancelled by an automatic programme selection', async mode => {
   const data = await fixture(), preview = await data.prepare(); data.mode(mode);
   const result = (await data.call('/provider/apply-automatic', {token: preview.token})).result;
@@ -208,6 +246,15 @@ test('a Hold appearing after upload remains active and prevents confirmation wit
   data.onControls(() => {if (++reads === 2) data.mode('hold');});
   expect((await data.call('/provider/apply-automatic', {token: preview.token})).result)
     .toMatchObject({status: 'conflict', writeAttempted: true, readback: {mode: 'hold', scheduled: false}});
+  expect(data.calls.filter(call => call.kind === 'write')).toHaveLength(1);
+  expect(data.calls.some(call => call.properties?.ControlMode)).toBe(false);
+});
+
+test('a superseding selection during the final control read cannot confirm the obsolete programme', async () => {
+  const data = await fixture(), preview = await data.prepare(); let reads = 0;
+  data.onControls(() => {if (++reads === 2) void data.call('/provider/cancel-automatic', {token: preview.token});});
+  const result = (await data.call('/provider/apply-automatic', {token: preview.token})).result;
+  expect(result.status).not.toBe('confirmed'); expect(result.writeAttempted).toBe(true);
   expect(data.calls.filter(call => call.kind === 'write')).toHaveLength(1);
   expect(data.calls.some(call => call.properties?.ControlMode)).toBe(false);
 });

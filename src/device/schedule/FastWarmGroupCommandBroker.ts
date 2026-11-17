@@ -186,10 +186,15 @@ export default class FastWarmGroupCommandBroker {
       throw new FastWarmGroupCommandRejected('The current group membership or native schedule capabilities could not be confirmed; no group command was sent.');
     }
     if (!this.allowed(items)) throw new FastWarmGroupCommandRejected('An owned programme operation changed during group validation.');
+    let blocked = false;
     try {
       const response = await this.api.postOnce(base + '/properties', {properties: JSON.stringify(items[0].properties)}, {
-        timeoutMs: this.timeoutMs, shouldProceed: () => this.allowed(items) && this.currentCapabilities(groupId, capabilities),
+        timeoutMs: this.timeoutMs, shouldProceed: () => {
+          const allowed = this.allowed(items) && this.currentCapabilities(groupId, capabilities);
+          if (!allowed) blocked = true; return allowed;
+        },
       });
+      if (blocked) throw new FastWarmGroupCommandRejected('The local group guard stopped transmission.');
       if (response.success !== true || response.result?.result !== true) {
         // A failed group acknowledgement does not establish which members applied it.
         throw new Error('The grouped schedule command was not acknowledged. Do not automatically retry.');

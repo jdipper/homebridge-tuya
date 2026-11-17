@@ -8,11 +8,11 @@ import { writePrivateJson } from '../../util/PrivateFile';
 interface Descriptor {
   version: 1; protocolVersion: 1; plugin: '@jdipper/homebridge-tuya';
   instanceId: string; socketPath: string; token: string; pid: number;
-  capabilities?: {automaticFreshBaseline: true};
+  capabilities?: {automaticFreshBaseline: true; automaticCancellation: true};
 }
 type Handler = (route: string, body: Record<string, unknown>) => Promise<unknown>;
 const ROUTES = ['/provider/list', '/provider/refresh', '/provider/read', '/provider/prepare', '/provider/apply',
-  '/provider/prepare-automatic', '/provider/apply-automatic', '/provider/discard'];
+  '/provider/prepare-automatic', '/provider/apply-automatic', '/provider/cancel-automatic', '/provider/discard'];
 
 /** Owner-only local IPC. The provider never opens a LAN listener or exposes Tuya credentials. */
 export default class TuyaProgrammeProviderServer {
@@ -110,7 +110,7 @@ export default class TuyaProgrammeProviderServer {
     const descriptor: Descriptor = {
       version: 1, protocolVersion: 1, plugin: '@jdipper/homebridge-tuya', instanceId: this.instanceId,
       socketPath, token: randomBytes(32).toString('hex'), pid: process.pid,
-      ...(this.automaticFreshBaseline ? {capabilities: {automaticFreshBaseline: true as const}} : {}),
+      ...(this.automaticFreshBaseline ? {capabilities: {automaticFreshBaseline: true as const, automaticCancellation: true as const}} : {}),
     };
     const server = createServer((request, response) => {
       void this.onRequest(request, response, descriptor);

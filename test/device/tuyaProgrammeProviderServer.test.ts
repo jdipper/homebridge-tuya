@@ -157,8 +157,13 @@ test('rejects symlink descriptors and group-writable persistence directories', a
 test('only an explicitly capable backend advertises queue-owned automatic baseline support', async () => {
   const data = await fixture(true); await data.server.start();
   const descriptor = JSON.parse(await fs.readFile(path.join(data.directory, `TuyaProgrammeProvider.${instance}.json`), 'utf8'));
-  expect(descriptor.capabilities).toEqual({automaticFreshBaseline: true});
+  expect(descriptor.capabilities).toEqual({automaticFreshBaseline: true, automaticCancellation: true});
   const reply = await call(descriptor.socketPath, descriptor.token, '/provider/prepare-automatic', '{}');
   expect(reply.status).toBe(200);
   expect(data.handler).toHaveBeenCalledWith('/provider/prepare-automatic', {});
+  expect((await call(descriptor.socketPath, 'wrong', '/provider/cancel-automatic', '{}')).status).toBe(403);
+  expect(data.handler).toHaveBeenCalledTimes(1);
+  const cancel = await call(descriptor.socketPath, descriptor.token, '/provider/cancel-automatic', '{"token":"67c8798f-e81f-47c9-a088-dd4eed03b736"}');
+  expect(cancel.status).toBe(200);
+  expect(data.handler).toHaveBeenCalledWith('/provider/cancel-automatic', {token: '67c8798f-e81f-47c9-a088-dd4eed03b736'});
 });

@@ -7,7 +7,7 @@ heating controller, and security fixes.
 
 ## Shared heating controller
 
-The local `2.7.3-jdipper.6` build separates device integration from household
+The local `2.7.3-jdipper.7` build separates device integration from household
 control. **Heating Programmes** owns the programme editor, saved Home/Away/Holiday
 drafts, household presence, Holiday return, history and the Apple Home switches.
 This Tuya plugin owns Tuya authentication, normal HomeKit accessories, accepted
@@ -33,6 +33,22 @@ Reads and previews do not change temperatures, programmes, power or mode.
 Application consumes one short-lived preview, checks a fresh baseline, writes
 changed periods once, and requires complete readback and Scheduled mode before
 reporting confirmation. Uncertain outcomes are never automatically retried.
+
+Heating Programmes `0.1.0-jdipper.8` adds exclusive Home/Holiday transitions in
+the shared controller. This device provider advertises `automaticCancellation`
+and accepts a private `/provider/cancel-automatic` request for one owned automatic
+preview token. Cancellation does not open another Tuya connection, add a cloud
+request, replay a command or send a rollback. It marks the owned operation obsolete
+so that unsent packets and obsolete mode activation stop at command/dispatch
+boundaries, including after asynchronous authentication. A submitted command is
+allowed to finish while its device queue remains reserved. The controller then
+prepares the latest different programme against a fresh baseline. Cancellation
+does not claim a partial upload restored or confirmed a week.
+
+The automatic fresh-baseline lease, grouped inquiry/write paths, capability cache,
+fresh membership/availability/mode guards, one-shot tokens and manual preview
+conflict checks remain in place. A normal profile change follows the same cloud
+request path as `.6`; local cancellation is used only when intent changes.
 
 FastWarm support targets the ET-63 product `lmtejj3f4kafi2k1`, configured in Celsius
 and seven-day mode. Each day has four strictly increasing periods, with targets

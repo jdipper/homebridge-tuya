@@ -192,23 +192,22 @@ describe('read-only verification controls', () => {
 
 describe('household timing and priority', () => {
   const formatDate = () => '19:15';
-  test('Away delay counts the effective Home programme and gives an explicit future request time', () => {
-    const view = { ...household(), presence: { home: false, effectiveHome: true, pendingAwayAt: 1794078900000 } };
-    expect(householdProgrammeIntent(view)).toBe('home');
-    expect(buildProgrammeFeedback(view, options).title).toBe('Home confirmed in 1 room');
-    expect(householdProgrammeContext(view, formatDate)).toBe('Away scheduled for 19:15. Home remains requested until then.');
+  test('an Away request is shown immediately without a departure countdown', () => {
+    const view = { ...household(), presence: { home: false, effectiveHome: false } };
+    expect(householdProgrammeIntent(view)).toBe('away');
+    expect(householdProgrammeContext(view, formatDate)).toBe('Everyone is away. Away programme requested.');
   });
 
-  test('explicit unknown effective presence is not replaced with actual Away before its delay', () => {
-    const view = { ...household(), presence: { home: false, effectiveHome: null, pendingAwayAt: 1794078900000 } };
+  test('explicit unknown effective presence is not replaced with actual Away', () => {
+    const view = { ...household(), presence: { home: false, effectiveHome: null } };
     expect(householdProgrammeIntent(view)).toBeNull();
-    expect(householdProgrammeContext(view, formatDate)).toContain('No household programme is currently requested');
+    expect(householdProgrammeContext(view, formatDate)).toBe('Presence has not been set.');
     expect(buildProgrammeFeedback(view, options).kind).toBe('neutral');
   });
 
-  test('a guest hold takes priority over an earlier Away deadline', () => {
+  test('a guest hold takes priority over actual Away occupancy', () => {
     const view = { ...household(), presence: { home: false, effectiveHome: true,
-      pendingAwayAt: 1794078900000, holdUntil: 1794082500000 } };
+      holdUntil: 1794082500000 } };
     expect(householdProgrammeContext(view, formatDate)).toBe('Guest hold: Home programme requested until 19:15.');
   });
 

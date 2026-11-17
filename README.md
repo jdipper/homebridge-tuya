@@ -30,8 +30,8 @@ to the original project. This fork is not a separately verified release.
   editor to prepare a programme for all or selected rooms.
 - Separate draft saving, preview and application, with complete native programme
   readback and confirmation for each room.
-- Apple Home switches for household presence and Holiday, plus an Away delay,
-  guest hold and optional Holiday return/preheat time in Homebridge.
+- Mutually exclusive Apple Home Home/Holiday switches, with immediate household
+  selections, a guest hold and optional Holiday return/preheat time in Homebridge.
 - Local temperature history and saved programme versions.
 - Credential redaction, private diagnostic/state files and cancellation of
   superseded smart-lock requests.
@@ -64,13 +64,17 @@ The two separate accessories in Apple Home select household programmes:
 
 | Accessory | On | Off |
 | --- | --- | --- |
-| Heating Home | Select Home | Select Away after the configured delay |
-| Heating Holiday | Select Holiday, with priority over presence | Resume the Home/Away selection |
+| Heating Home | End Holiday and select Home | Select Away immediately when Holiday is not active |
+| Heating Holiday | Select Holiday and show Home off | Resume the remembered Home/Away selection |
 
 Set the initial household presence, then configure automations to turn **Heating
 Home** on when the first person arrives and off when the last person leaves.
-Presence changes during Holiday are remembered. The default Away delay is 30
-minutes and can be changed in the editor.
+Home on ends Holiday, including when an arrival automation operates the switch.
+Home off during Holiday remembers absence without cancelling Holiday. There is
+no Homebridge departure delay; any wait belongs in the external automation before
+it sends the final switch command. A newer household selection stops remaining
+obsolete upload commands after any already-submitted command finishes, then
+applies and verifies the latest programme from a fresh baseline.
 
 Apple Home provides these on/off controls; the programme tables, application
 progress and Holiday return date/time are in Homebridge. Expand **Presence,

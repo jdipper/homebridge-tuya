@@ -7,7 +7,7 @@ still need implementation and device testing.
 The development branch contains the temperature fix, programme transport,
 Home/Away/Holiday profile state, private runtime/UI relay, Apple Home selector
 switches and a shared editor. It also includes planned now/next periods, Holiday
-return/preheat, Away grace/guest hold, temperature history and programme version
+return/preheat, a guest hold, temperature history and programme version
 restore. A pilot on 7 November 2026 verified six measured temperatures and one
 complete native programme. A subsequent temporary-temperature hardware test
 failed, so new boosts/setbacks are disabled. Native weekly programme uploads

@@ -3,12 +3,12 @@ import { createThermostatControlPolicy, evaluateThermostatControlPolicy, policyD
 
 const now = Date.UTC(2026, 0, 1, 12);
 
-test('Away delay retains Home, arrival cancels it, and guest hold wins without changing actual occupancy', () => {
+test('Away and Home take effect immediately, while a guest hold keeps occupancy separate', () => {
   const home = createThermostatControlPolicy(true);
-  const departing = { ...home, actualHome: false, pendingAwayAt: now + 1800000 };
-  expect(evaluateThermostatControlPolicy(departing, now).effectiveHome).toBe(true);
-  expect(evaluateThermostatControlPolicy(departing, now + 1800000).effectiveHome).toBe(false);
-  const guest = evaluateThermostatControlPolicy({ ...departing, holdUntil: now + 3600000 }, now + 1800000);
+  const departing = { ...home, actualHome: false };
+  expect(evaluateThermostatControlPolicy(departing, now).effectiveHome).toBe(false);
+  expect(evaluateThermostatControlPolicy({ ...departing, actualHome: true }, now).effectiveHome).toBe(true);
+  const guest = evaluateThermostatControlPolicy({ ...departing, holdUntil: now + 3600000 }, now);
   expect(guest.actualHome).toBe(false);
   expect(guest.effectiveHome).toBe(true);
   expect(evaluateThermostatControlPolicy(guest, now + 3600000).effectiveHome).toBe(false);
@@ -35,11 +35,21 @@ test('unknown occupancy at Holiday return requires explicit recovery, rather tha
 
 test('legacy settings migrate without deadlines and startup overdue deadlines never replay', () => {
   expect(restoreThermostatControlPolicy(undefined, true, true, now)).toEqual(createThermostatControlPolicy(true, true));
-  const saved = { ...createThermostatControlPolicy(true), actualHome: false, pendingAwayAt: now - 1 };
+  const saved = { ...createThermostatControlPolicy(true), actualHome: false, holdUntil: now - 1 };
   const restored = restoreThermostatControlPolicy(saved, null, false, now);
   expect(restored.effectiveHome).toBe(true);
   expect(restored.recoveryRequired).toContain('while Homebridge was stopped');
   expect(policyDeadlines(restored)).toEqual([]);
+});
+
+test.each([now - 1, now + 1800000])('discards an old Away countdown (%s) without scheduling it or requiring recovery', pendingAwayAt => {
+  const saved = { ...createThermostatControlPolicy(true), actualHome: false, awayDelayMinutes: 30, pendingAwayAt };
+  const restored = restoreThermostatControlPolicy(saved, null, false, now);
+  expect(restored).not.toHaveProperty('pendingAwayAt');
+  expect(restored).not.toHaveProperty('awayDelayMinutes');
+  expect(restored.recoveryRequired).toBeNull();
+  expect(policyDeadlines(restored)).toEqual([]);
+  expect(evaluateThermostatControlPolicy(restored, now).effectiveHome).toBe(false);
 });
 
 test('validates bounded future dates and minutes', () => {

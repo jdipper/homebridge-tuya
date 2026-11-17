@@ -182,6 +182,11 @@ export default class ThermostatRuntime extends EventEmitter {
     return this.controls.holidayActive;
   }
 
+  /** Apple Home's mode switches are exclusive; occupancy remains remembered separately. */
+  get homeActive() {
+    return this.controls.holidayActive ? false : this.controls.actualHome;
+  }
+
   view() {
     return {
       instanceId: this.instanceId,
@@ -244,8 +249,7 @@ export default class ThermostatRuntime extends EventEmitter {
         };
       }),
       presence: { home: this.controls.actualHome, effectiveHome: this.controls.effectiveHome,
-        pendingAwayAt: this.controls.pendingAwayAt, holdUntil: this.controls.holdUntil,
-        awayDelayMinutes: this.controls.awayDelayMinutes },
+        holdUntil: this.controls.holdUntil },
       holiday: { active: this.controls.holidayActive, returnAt: this.controls.returnAt,
         preheatMinutes: this.controls.preheatMinutes, preheating: this.controls.preheating,
         recoveryRequired: this.controls.recoveryRequired },
@@ -475,12 +479,6 @@ export default class ThermostatRuntime extends EventEmitter {
         }
         return this.view();
       }
-      case '/controls/settings': {
-        const delay = policyMinutes(body.awayDelayMinutes, 'Away delay', 1440);
-        return this.setPolicy(policy => ({ ...policy, awayDelayMinutes: delay,
-          pendingAwayAt: policy.pendingAwayAt === null ? null
-            : policy.pendingAwayAt + (delay - policy.awayDelayMinutes) * 60000 }));
-      }
       case '/presence/hold': {
         const until = policyTimestamp(body.until, 'Keep Home until', Date.now());
         return this.setPolicy(policy => ({ ...policy, holdUntil: until }));
@@ -490,15 +488,16 @@ export default class ThermostatRuntime extends EventEmitter {
           throw new Error('Review and explicitly confirm heating policy recovery.');
         }
         return this.setPolicy(policy => ({ ...policy, recoveryRequired: null }));
+      case '/home':
       case '/presence':
         if (typeof body.home !== 'boolean') {
           throw new Error('Presence must indicate whether anyone is home.');
         }
         return this.setPolicy(policy => {
           const home = body.home as boolean;
-          return { ...policy, actualHome: home, effectiveHome: home ? true : policy.effectiveHome,
-            pendingAwayAt: home || policy.awayDelayMinutes === 0 ? null
-              : policy.actualHome === false ? policy.pendingAwayAt : Date.now() + policy.awayDelayMinutes * 60000 };
+          return { ...policy, ...(route === '/home' && home
+            ? { holidayActive: false, returnAt: null, preheating: false } : {}),
+            actualHome: home, effectiveHome: home };
         });
       case '/holiday':
         if (typeof body.active !== 'boolean') {
@@ -587,11 +586,21 @@ export default class ThermostatRuntime extends EventEmitter {
       this.requireNoOverride(id);
       await this.readSettings(id);
       this.requireSevenDayMode(id);
-      if (!expectedFingerprint) {
+      // A household switch is a new request, not an editor preview. Its baseline
+      // must reflect the thermostat now, including after a restart or failed upload.
+      let baselineFingerprint = expectedFingerprint;
+      if (!manual) {
+        const baseline = await this.schedules.read(id);
+        this.snapshots.set(id, baseline);
+        baselineFingerprint = baseline.fingerprint ?? '';
+      }
+      if (!baselineFingerprint) {
         throw new Error('Read a complete thermostat programme before applying a saved profile.');
       }
       const operationId = randomUUID();
       let plan: ThermostatProfileApplyPlan | undefined;
+      const isCurrent = () => !this.closed && (manual || (this.state.enabledDeviceIds.includes(id)
+        && this.state.devices[id]?.requestedProfile === plan?.profileId && !this.controls.recoveryRequired));
       let mayHaveChangedDevice = false;
       let failureStatus = 'failed';
       try {
@@ -610,7 +619,8 @@ export default class ThermostatRuntime extends EventEmitter {
         if (this.closed) {
           throw new Error('Homebridge stopped before the programme upload began.');
         }
-        const result = await this.schedules.apply(id, { draft: stateFor(plan.programme), expectedFingerprint });
+        const result = await this.schedules.apply(id, { draft: stateFor(plan.programme), expectedFingerprint: baselineFingerprint,
+          ...(!manual ? { isCurrent } : {}) });
         const snapshot = result.readback ?? result.backup;
         this.snapshots.set(id, snapshot);
         mayHaveChangedDevice = result.applied > 0 || result.unknownOutcome === true || result.status === 'conflict';
@@ -628,16 +638,29 @@ export default class ThermostatRuntime extends EventEmitter {
         if (result.status !== 'verified' && result.status !== 'no_changes') {
           throw new Error(result.error ?? `Programme application ${result.status}.`);
         }
+        if (!isCurrent()) {
+          throw new Error('A newer programme was selected; the earlier upload was cancelled.');
+        }
         // The preview and automation enrollment both describe activation explicitly.
         mayHaveChangedDevice = true;
         if (this.closed) {
           throw new Error('Homebridge stopped before programme mode could be activated.');
         }
         await this.schedules.activateProgramme(id);
+        if (!isCurrent()) {
+          throw new Error('A newer programme was selected; the earlier upload was cancelled.');
+        }
+        // Mode activation is another device command. Verify all 28 periods after
+        // it as well, rather than confirming a pre-activation snapshot.
+        const confirmation = await this.schedules.read(id);
+        this.snapshots.set(id, confirmation);
         await this.readSettings(id);
         this.requireSevenDayMode(id);
         if (this.nativeSettings.get(id)?.mode !== 'smart') {
           throw new Error('The programme was uploaded, but scheduled mode could not be confirmed.');
+        }
+        if (!confirmation.fingerprint || JSON.stringify(confirmation.state.days) !== JSON.stringify(stateFor(plan.programme).days)) {
+          throw new Error('The programme could not be verified after Scheduled mode was activated. Read the thermostat before applying again.');
         }
         const confirmed = plan;
         await this.updateState(state => {
@@ -648,12 +671,15 @@ export default class ThermostatRuntime extends EventEmitter {
         });
         this.jobs.set(id, { status: 'verified', requestedProfile: confirmed.profileId, completedAt: Date.now() });
       } catch (error) {
-        this.pending.delete(id);
+        const attemptedProfile = plan?.profileId ?? selected;
+        if (this.pending.get(id) === attemptedProfile) {
+          this.pending.delete(id);
+        }
         await this.updateState(state => reduceThermostatProfiles(state, {
           type: 'apply-failed', deviceId: id, operationId, error: message(error), mayHaveChangedDevice,
         }), true);
         this.jobs.set(id, { status: mayHaveChangedDevice && failureStatus !== 'conflict' ? 'partial' : failureStatus,
-          requestedProfile: selected,
+          requestedProfile: attemptedProfile,
           error: message(error) });
       }
     }, selected);
@@ -709,8 +735,15 @@ export default class ThermostatRuntime extends EventEmitter {
         return;
       }
       const next = this.pending.get(id);
-      if (next && !this.closed && this.jobs.get(id)?.status === 'verified' && this.state.enabledDeviceIds.includes(id)
-        && this.state.devices[id]?.requestedProfile === next && this.state.devices[id]?.status === 'pending'
+      const job = this.jobs.get(id);
+      const profile = this.state.devices[id];
+      // Never replay a failed request. A later, different selection (for example
+      // Holiday off) remains authorised and gets its own fresh baseline/readback.
+      const canContinue = job?.status === 'verified' ? profile?.status === 'pending'
+        : job?.requestedProfile !== next && ['failed', 'partial', 'conflict'].includes(job?.status ?? '')
+          && ['pending', 'partial', 'failed'].includes(profile?.status ?? '');
+      if (next && !this.closed && canContinue && this.state.enabledDeviceIds.includes(id)
+        && profile?.requestedProfile === next
         && !this.hasOverride(id) && !this.controls.recoveryRequired) {
         this.pending.delete(id);
         this.launchApply(id, next, this.snapshots.get(id)?.fingerprint ?? '', false);

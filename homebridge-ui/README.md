@@ -54,8 +54,9 @@ shows the limitation and omits the activation form, while retaining restoration
 controls for any existing active/recovery record. API preview/start are also
 blocked, without an opt-in bypass. See [the programme guide](../docs/fastwarm-profiles.md).
 
-Household options configure an Away grace period (initially 30 minutes), a guest
-Home hold, and an optional Holiday return with a Home preheat lead. Timed
+Household options configure a guest Home hold and an optional Holiday return with
+a Home preheat lead. Home/Away requests have no departure grace period; any wait
+belongs in the external automation before its final switch command. Timed
 programme changes need Homebridge and Tuya connectivity. Holiday remains the
 highest-priority household programme until its return/preheat transition or
 manual end. Interrupted policy changes expose an explicit recovery action that
@@ -103,7 +104,6 @@ discovered. The relay removes this routing field before forwarding the body.
 | `/schedules/apply` | `{ deviceIds, profile, preview: true }`, then `{ previewId }` |
 | `/presence` | `{ home: boolean }` |
 | `/holiday` | `{ active: boolean, returnAt?: number \| null, preheatMinutes?: number }` |
-| `/controls/settings` | `{ awayDelayMinutes }` |
 | `/rooms/save` | `{ deviceId, name, timeZone?, clockVerified? }` |
 | `/presence/hold` | `{ until: number \| null }` |
 | `/overrides/preview` | `{ deviceId, temperature, endsAt: number \| "next-period" }` |

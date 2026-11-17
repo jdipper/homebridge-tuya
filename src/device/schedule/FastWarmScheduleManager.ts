@@ -170,7 +170,7 @@ export default class FastWarmScheduleManager {
 
   apply(
     deviceId: string,
-    request: { draft: FastWarmScheduleState; expectedFingerprint: string },
+    request: { draft: FastWarmScheduleState; expectedFingerprint: string; isCurrent?: () => boolean },
   ): Promise<FastWarmScheduleApplyResult> {
     let draft: FastWarmScheduleState;
     try {
@@ -190,6 +190,11 @@ export default class FastWarmScheduleManager {
       if (backup.fingerprint !== expectedFingerprint) {
         return { status: 'conflict', backup, planned: 0, applied: 0, error: 'The thermostat schedule changed. Refresh before applying.' };
       }
+      const cancelled = () => request.isCurrent !== undefined && !request.isCurrent();
+      const cancellationError = 'A newer programme was selected; the earlier upload was cancelled.';
+      if (cancelled()) {
+        return { status: 'failed', backup, planned: 0, applied: 0, error: cancellationError };
+      }
       const commands: { day: number; event: FastWarmScheduleEvent }[] = [];
       draft.days.forEach((day, index) => day.events.forEach((event, eventIndex) => {
         if (JSON.stringify(event) !== JSON.stringify(backup.state.days[index].events[eventIndex])) {
@@ -204,6 +209,12 @@ export default class FastWarmScheduleManager {
       let writeError: string | undefined;
       let unknownOutcome = false;
       for (const command of commands) {
+        // Never overlap writes or try to undo an in-flight request. Stop at the
+        // next command boundary; the new selection reads its own fresh baseline.
+        if (cancelled()) {
+          return { status: applied > 0 ? 'partial' : 'failed', backup, planned: commands.length, applied,
+            error: cancellationError, unknownOutcome: false };
+        }
         let submitted = false;
         try {
           this.requireDevice(deviceId);
@@ -220,6 +231,10 @@ export default class FastWarmScheduleManager {
       let readback: FastWarmScheduleSnapshot | undefined;
       let verificationReads = 0;
       const targetFingerprint = fingerprint(draft);
+      if (!writeError && cancelled()) {
+        return { status: applied > 0 ? 'partial' : 'failed', backup, planned: commands.length, applied,
+          error: cancellationError, unknownOutcome: false };
+      }
       try {
         // Tuya's command acknowledgement can precede the thermostat applying its
         // final event. Repeat only the inquiry, never any programme or mode write.

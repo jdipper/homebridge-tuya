@@ -19,13 +19,15 @@ profiles is a power on/off schedule.
 
 The plugin exposes two separate HomeKit switch accessories:
 
-- **Heating Home**: on selects Home, off selects Away after the configured delay.
+- **Heating Home**: on ends Holiday and selects Home; off selects Away immediately
+  when Holiday is not active.
 - **Heating Holiday**: on selects Holiday regardless of household presence. Turning it off
   returns to the selected Home/Away state.
 
-Each accessory contains one switch, so Home and Holiday can be selected
-independently instead of relying on Apple Home's multi-switch accessory layout.
-Names chosen in Apple Home are preserved.
+Each accessory contains one switch. The switches are mutually exclusive: Holiday
+on shows Home off, and Home on turns Holiday off and clears its return/preheat
+timer. Names chosen in Apple Home are preserved. Showing Home off during Holiday
+does not change the separately remembered household presence.
 
 When upgrading from the grouped **Heating Programmes** accessory, its identity
 and Home switch are retained so Home/Away automations keep their existing target.
@@ -34,21 +36,27 @@ or automations to select it. Apple Home may retain the old **Heating Programmes*
 name on the Home control; it can be renamed there. The migration publishes the
 replacement Holiday control before removing the old grouped Holiday service.
 
-Presence changes during Holiday are remembered. Turning Holiday off selects Home
-if anyone is home, or Away if everyone is out. Holiday can end manually or at an
-optional return time. Set the initial household presence before using the controls;
-unknown presence is never assumed to mean that the home is empty.
+Presence changes from the editor/runtime are remembered during Holiday. Turning
+Holiday off selects Home if anyone is home, or Away if everyone is out. Turning
+the Apple Home Home switch on is an explicit Home selection and ends Holiday,
+including when a first-arrival automation operates that switch. Setting Home off
+during Holiday remembers absence without cancelling Holiday. Holiday can end
+manually or at an optional return time. Set the initial household presence before
+using the controls; unknown presence is never assumed to mean that the home is empty.
 
-The default Away grace is 30 minutes; Home resumes as soon as someone arrives.
-The editor can change this delay, including setting zero for immediate Away.
+Home/Away selections start immediately, with no Homebridge departure grace
+period. Any delay belongs in the external automation before its switch command.
+Old saved Away countdowns are discarded and the delay setting is no longer shown.
 A guest hold keeps the Home programme selected until its chosen deadline even
 when all household members are out. Holiday takes priority over a guest hold.
 Actual occupancy remains visible separately from the effective heating choice.
 
 An optional Holiday preheat lead selects the Home programme before the planned
-return. At the return time, Holiday ends and the latest presence/guest hold
-selects Home or Away. These are Homebridge timers and need a working Tuya
-connection; they are separate from the thermostat's stored weekly programme.
+return. The Holiday switch remains on and Home remains off during preheat; the
+Household panel shows preheating separately. At the return time, Holiday ends and
+the latest presence/guest hold selects Home or Away. These are Homebridge timers
+and need a working Tuya connection; they are separate from the thermostat's stored
+weekly programme.
 An overdue timer after restart requires explicit recovery instead of replaying
 old commands. Unknown occupancy at Holiday return also requires review.
 
@@ -101,11 +109,15 @@ stored programmes**, which imports each room's own programme separately.
 To send saved drafts to the thermostats, choose **Review & apply selected**, or
 **Review & apply** in one room. The preview lists each room's changed periods.
 Only the final **Apply programme changes** action uploads them and activates
-scheduled (Smart) mode. Each result is checked with a fresh device readback.
+scheduled (Smart) mode. Each result is checked with a fresh device readback,
+including a complete 28-period check after Scheduled mode is activated.
 
 Save all three profiles before enabling a room for automatic household selection.
 Enrollment itself does not upload a programme. The next explicit presence/Holiday
-change selects the saved profile.
+change selects the saved profile. Automatic selections read their own fresh
+programme baseline, so they do not depend on opening the editor or on a cached
+programme from before an external edit or failed upload. Manual review/apply
+continues to reject changes made after its preview.
 
 Manual application of one saved profile works before automatic enrollment. It
 does not change the household presence or Holiday selection. The editor shows
@@ -114,8 +126,7 @@ need applying.
 
 The Household panel reports progress across rooms enabled for automatic changes:
 how many have confirmed the selected programme, which are updating or waiting,
-and which need attention. An Away delay shows its scheduled time while Home
-continues. Holiday, guest holds, preheat and recovery are shown separately from
+and which need attention. Holiday, guest holds, preheat and recovery are shown separately from
 room confirmation. Rooms outside automatic control are excluded from the total.
 
 Room cards show their programme result and last successful confirmation time
@@ -202,11 +213,35 @@ The last readback and saved templates persist locally, so they can be reviewed
 on the LAN while cloud operations are unavailable.
 
 Before applying, the runtime reads a complete backup and checks that it matches
-the preview's baseline. An edit made at the wall panel or in SmartLife causes a
-conflict instead of being silently overwritten. Failed writes and restored
-in-progress operations do not automatically replay when the internet or
-Homebridge returns. Read the device and explicitly retry after reconciling the
-programme.
+the baseline: the reviewed preview for a manual application, or a new read for
+a household selection. An intervening edit at the wall panel or in SmartLife
+causes a conflict. Failed writes and restored in-progress operations do not
+automatically replay when the internet or Homebridge returns. A later, different
+selection received during an upload is retained even if that upload fails: for
+example, Holiday off starts its own fresh read and Home/Away application after
+the earlier operation finishes. It never retries the failed Holiday request.
+If no different selection is waiting, read the device and explicitly retry after
+reconciling the programme.
+
+A newer household selection also supersedes an upload already running. The
+transport waits for any submitted command to finish, then stops sending obsolete
+events and skips obsolete mode activation. The latest request gets a fresh
+baseline and full verification. An already-sent command cannot be recalled;
+programme uploads still take the time needed for Tuya commands and readbacks.
+
+## Departure delays in external automations
+
+An external delayed Away action must be cancelled or invalidated when anyone
+returns, before selecting Home. Merely selecting Home does not stop a shortcut
+that is still waiting and will later send Home off.
+
+A separate pending-departure helper can be armed on departure and cleared on
+return. The delayed shortcut must check it immediately before sending Away.
+Do not use Heating Home as that flag: it remains on while an external delay is
+waiting, and Holiday masks its display. If departure runs can overlap, use a
+restartable timer or per-run identifier as well, so an older run cannot complete
+a newer departure early. These helpers belong to the external automation;
+this plugin does not create them or cancel a running Apple shortcut.
 
 ## Process boundary
 

@@ -207,6 +207,37 @@ describe('FastWarm programme transport', () => {
     expect(scheduleWrites()).toHaveLength(0);
   });
 
+  test('a superseded request sends no event writes', async () => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state));
+    draft.days[0].events[0].temperature = 16;
+    const result = await manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint!, isCurrent: () => false });
+    expect(result).toMatchObject({ status: 'failed', applied: 0 });
+    expect(scheduleWrites()).toHaveLength(0);
+  });
+
+  test('a return during an event write stops the remaining Away writes and allows fresh Home restoration', async () => {
+    const baseline = await manager.read(device.id);
+    const draft = JSON.parse(JSON.stringify(baseline.state));
+    draft.days.forEach((day: { events: { temperature: number }[] }) => day.events.forEach(event => { event.temperature = 16; }));
+    let current = true;
+    const originalPost = post.getMockImplementation()!;
+    post.mockImplementation(async (...args) => {
+      const result = await originalPost(...args);
+      if (JSON.parse(args[1].properties).week_program) current = false;
+      return result;
+    });
+    const interrupted = await manager.apply(device.id, { draft, expectedFingerprint: baseline.fingerprint!, isCurrent: () => current });
+    expect(interrupted).toMatchObject({ status: 'partial', applied: 1, planned: 21, unknownOutcome: false });
+    expect(scheduleWrites()).toHaveLength(1);
+    expect(propertiesSent().filter(properties => properties.inquire)).toHaveLength(2);
+    const fresh = await manager.read(device.id);
+    const restored = await manager.apply(device.id, { draft: baseline.state, expectedFingerprint: fresh.fingerprint! });
+    expect(restored.status).toBe('verified');
+    expect(stored).toEqual(baseline.state);
+    expect(scheduleWrites()).toHaveLength(2);
+  });
+
   test('skips writes for an unchanged validated draft', async () => {
     const baseline = await manager.read(device.id);
     expect((await manager.apply(device.id, { draft: baseline.state, expectedFingerprint: baseline.fingerprint! })).status).toBe('no_changes');

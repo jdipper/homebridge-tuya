@@ -167,7 +167,6 @@ describe('Homebridge custom UI runtime relay', () => {
   });
 
   test.each([
-    ['/controls/settings', { awayDelayMinutes: 30 }],
     ['/rooms/save', { deviceId: 'fixture-room', name: 'Kitchen', timeZone: 'Europe/London', clockVerified: true }],
     ['/rooms/refresh', {}],
     ['/presence/hold', { until: 2000000000000 }],

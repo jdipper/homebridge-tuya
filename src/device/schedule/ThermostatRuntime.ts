@@ -249,8 +249,7 @@ export default class ThermostatRuntime extends EventEmitter {
         };
       }),
       presence: { home: this.controls.actualHome, effectiveHome: this.controls.effectiveHome,
-        pendingAwayAt: this.controls.pendingAwayAt, holdUntil: this.controls.holdUntil,
-        awayDelayMinutes: this.controls.awayDelayMinutes },
+        holdUntil: this.controls.holdUntil },
       holiday: { active: this.controls.holidayActive, returnAt: this.controls.returnAt,
         preheatMinutes: this.controls.preheatMinutes, preheating: this.controls.preheating,
         recoveryRequired: this.controls.recoveryRequired },
@@ -480,12 +479,6 @@ export default class ThermostatRuntime extends EventEmitter {
         }
         return this.view();
       }
-      case '/controls/settings': {
-        const delay = policyMinutes(body.awayDelayMinutes, 'Away delay', 1440);
-        return this.setPolicy(policy => ({ ...policy, awayDelayMinutes: delay,
-          pendingAwayAt: policy.pendingAwayAt === null ? null
-            : policy.pendingAwayAt + (delay - policy.awayDelayMinutes) * 60000 }));
-      }
       case '/presence/hold': {
         const until = policyTimestamp(body.until, 'Keep Home until', Date.now());
         return this.setPolicy(policy => ({ ...policy, holdUntil: until }));
@@ -504,9 +497,7 @@ export default class ThermostatRuntime extends EventEmitter {
           const home = body.home as boolean;
           return { ...policy, ...(route === '/home' && home
             ? { holidayActive: false, returnAt: null, preheating: false } : {}),
-            actualHome: home, effectiveHome: home ? true : policy.effectiveHome,
-            pendingAwayAt: home || policy.awayDelayMinutes === 0 ? null
-              : policy.actualHome === false ? policy.pendingAwayAt : Date.now() + policy.awayDelayMinutes * 60000 };
+            actualHome: home, effectiveHome: home };
         });
       case '/holiday':
         if (typeof body.active !== 'boolean') {
@@ -608,6 +599,8 @@ export default class ThermostatRuntime extends EventEmitter {
       }
       const operationId = randomUUID();
       let plan: ThermostatProfileApplyPlan | undefined;
+      const isCurrent = () => !this.closed && (manual || (this.state.enabledDeviceIds.includes(id)
+        && this.state.devices[id]?.requestedProfile === plan?.profileId && !this.controls.recoveryRequired));
       let mayHaveChangedDevice = false;
       let failureStatus = 'failed';
       try {
@@ -626,7 +619,8 @@ export default class ThermostatRuntime extends EventEmitter {
         if (this.closed) {
           throw new Error('Homebridge stopped before the programme upload began.');
         }
-        const result = await this.schedules.apply(id, { draft: stateFor(plan.programme), expectedFingerprint: baselineFingerprint });
+        const result = await this.schedules.apply(id, { draft: stateFor(plan.programme), expectedFingerprint: baselineFingerprint,
+          ...(!manual ? { isCurrent } : {}) });
         const snapshot = result.readback ?? result.backup;
         this.snapshots.set(id, snapshot);
         mayHaveChangedDevice = result.applied > 0 || result.unknownOutcome === true || result.status === 'conflict';
@@ -644,12 +638,18 @@ export default class ThermostatRuntime extends EventEmitter {
         if (result.status !== 'verified' && result.status !== 'no_changes') {
           throw new Error(result.error ?? `Programme application ${result.status}.`);
         }
+        if (!isCurrent()) {
+          throw new Error('A newer programme was selected; the earlier upload was cancelled.');
+        }
         // The preview and automation enrollment both describe activation explicitly.
         mayHaveChangedDevice = true;
         if (this.closed) {
           throw new Error('Homebridge stopped before programme mode could be activated.');
         }
         await this.schedules.activateProgramme(id);
+        if (!isCurrent()) {
+          throw new Error('A newer programme was selected; the earlier upload was cancelled.');
+        }
         // Mode activation is another device command. Verify all 28 periods after
         // it as well, rather than confirming a pre-activation snapshot.
         const confirmation = await this.schedules.read(id);

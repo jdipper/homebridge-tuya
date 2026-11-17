@@ -42,8 +42,11 @@ class MockScheduleTransport {
     };
   }
 
-  performApply = async (id: string, request: { draft: FastWarmScheduleState; expectedFingerprint: string }) => {
+  performApply = async (id: string, request: { draft: FastWarmScheduleState; expectedFingerprint: string; isCurrent?: () => boolean }) => {
     const backup = this.snapshot(id);
+    if (request.isCurrent && !request.isCurrent()) {
+      return { status: 'failed', backup, planned: 0, applied: 0, error: 'A newer programme was selected.' } as FastWarmScheduleApplyResult;
+    }
     if (request.expectedFingerprint !== backup.fingerprint) {
       return { status: 'conflict', backup, planned: 0, applied: 0, error: 'The thermostat schedule changed. Refresh before applying.'
       } as FastWarmScheduleApplyResult;
@@ -254,6 +257,37 @@ describe('thermostat runtime explicit manual operations', () => {
 });
 
 describe('presence and Holiday programme application', () => {
+  test('a return supersedes an in-progress Away upload without activating the obsolete programme', async () => {
+    const { runtime, transport } = await fixture();
+    await configure(runtime, true);
+    await runtime.handle('/home', { home: true });
+    await idle(runtime);
+    transport.activateProgramme.mockClear();
+    const started = deferred<void>(), gate = deferred<void>();
+    transport.apply.mockImplementationOnce(async (id, request) => {
+      const backup = transport.snapshot(id);
+      const mixed = programme(20);
+      mixed.days[0].events[0].temperature = 16;
+      transport.native.set(id, mixed);
+      started.resolve();
+      await gate.promise;
+      expect(request.isCurrent!()).toBe(false);
+      return { status: 'partial', backup, applied: 1, planned: 28, unknownOutcome: false,
+        error: 'A newer programme was selected; the earlier upload was cancelled.' };
+    });
+    await runtime.handle('/home', { home: false });
+    await started.promise;
+    await runtime.handle('/home', { home: true });
+    expect(runtime.homeActive).toBe(true);
+    expect(runtime.view().presence.effectiveHome).toBe(true);
+    gate.resolve();
+    await idle(runtime);
+    expect(transport.apply).toHaveBeenCalledTimes(3);
+    expect(transport.activateProgramme).toHaveBeenCalledTimes(1);
+    expect(transport.native.get('room-a')).toEqual(programme(20));
+    expect(room(runtime).sync.confirmationMatchesRequested).toBe(true);
+  });
+
   test('Home and Holiday selections are exclusive without erasing remembered occupancy', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
@@ -277,7 +311,6 @@ describe('presence and Holiday programme application', () => {
   test('Home off during Holiday remembers absence without cancelling Holiday', async () => {
     const { runtime } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     await runtime.handle('/home', { home: true });
     await idle(runtime);
     await runtime.handle('/holiday', { active: true });
@@ -337,7 +370,6 @@ describe('presence and Holiday programme application', () => {
   test.each([true, false])('Holiday off restores the latest programme after an unfinished failed upload (home=%s)', async home => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     await runtime.handle('/presence', { home });
     await idle(runtime);
     await save(runtime, 'holiday', 12);
@@ -370,7 +402,6 @@ describe('presence and Holiday programme application', () => {
     await expect(save(runtime, 'home', 20, true)).rejects.toThrow('Home, Away and Holiday');
     expect(room(runtime).profiles).toEqual({});
     await configure(runtime, false);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     await runtime.handle('/presence', { home: true });
     await idle(runtime);
     expect(transport.apply).not.toHaveBeenCalled();
@@ -385,7 +416,6 @@ describe('presence and Holiday programme application', () => {
   test('Holiday wins during an ongoing Home application and ending Holiday uses the latest occupancy', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     const gate = deferred<void>();
     const started = deferred<void>();
     transport.apply.mockImplementationOnce(async (id, request) => {
@@ -415,7 +445,6 @@ describe('presence and Holiday programme application', () => {
   test('rapid intent changes coalesce to the last requested programme after the running operation', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     const gate = deferred<void>();
     const started = deferred<void>();
     transport.apply.mockImplementationOnce(async (id, request) => {
@@ -437,7 +466,6 @@ describe('presence and Holiday programme application', () => {
   test('partial failure remains visible and does not retry the failed selection automatically', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     const gate = deferred<void>();
     const started = deferred<void>();
     transport.apply.mockImplementationOnce(async (id, _request) => {
@@ -469,7 +497,6 @@ describe('presence and Holiday programme application', () => {
   test('saving a newer template during application leaves its unapplied changes visible', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     const gate = deferred<void>();
     const started = deferred<void>();
     transport.apply.mockImplementationOnce(async (id, request) => {
@@ -492,7 +519,6 @@ describe('presence and Holiday programme application', () => {
   test('ending Holiday with unknown occupancy is rejected before choosing a fallback profile', async () => {
     const { runtime } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     await runtime.handle('/holiday', { active: true });
     await idle(runtime);
     expect(runtime.view().presence.home).toBeNull();
@@ -505,7 +531,6 @@ describe('runtime persistence', () => {
   test('a failed intent persistence cannot erase a concurrently committed Holiday request', async () => {
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     jest.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('First intent could not be persisted'));
     const home = runtime.handle('/presence', { home: true });
     const holiday = runtime.handle('/holiday', { active: true });
@@ -548,44 +573,31 @@ describe('bridge-owned controls and timers', () => {
     jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
   }
 
-  test('default Away grace and guest hold retain actual occupancy separately', async () => {
+  test('Home/Away selection starts immediately and guest hold retains occupancy separately', async () => {
     fakeClock();
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    expect(runtime.view().presence.awayDelayMinutes).toBe(30);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 30 });
     await runtime.handle('/presence', { home: true });
     await idle(runtime);
     await runtime.handle('/presence', { home: false });
     expect(runtime.view().presence.home).toBe(false);
-    expect(runtime.view().presence.effectiveHome).toBe(true);
-    jest.advanceTimersByTime(30 * 60000 - 1);
+    expect(runtime.view().presence.effectiveHome).toBe(false);
     await idle(runtime);
-    expect(transport.apply).toHaveBeenCalledTimes(1);
+    expect(room(runtime).sync.confirmedProfile).toBe('away');
+    expect(transport.apply).toHaveBeenCalledTimes(2);
     await runtime.handle('/presence/hold', { until: Date.now() + 3600000 });
-    jest.advanceTimersByTime(1);
     await idle(runtime);
     expect(runtime.view().presence.effectiveHome).toBe(true);
+    expect(runtime.view().presence.home).toBe(false);
     jest.advanceTimersByTime(3600000);
     await idle(runtime);
     expect(runtime.view().presence.effectiveHome).toBe(false);
     expect(room(runtime).sync.confirmedProfile).toBe('away');
-    expect(transport.apply).toHaveBeenCalledTimes(2);
+    expect(transport.apply).toHaveBeenCalledTimes(4);
   });
 
-  test('arrival cancels a pending departure and unknown presence remains unknown after guest hold', async () => {
+  test('unknown presence remains unknown after guest hold', async () => {
     fakeClock();
-    const { runtime, transport } = await fixture();
-    await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 30 });
-    await runtime.handle('/presence', { home: true });
-    await idle(runtime);
-    await runtime.handle('/presence', { home: false });
-    await runtime.handle('/presence', { home: true });
-    expect(runtime.view().presence.pendingAwayAt).toBeNull();
-    jest.advanceTimersByTime(3600000);
-    await idle(runtime);
-    expect(transport.apply).toHaveBeenCalledTimes(1);
     const second = await fixture();
     await configure(second.runtime, true);
     await second.runtime.handle('/presence/hold', { until: Date.now() + 1000 });
@@ -601,7 +613,6 @@ describe('bridge-owned controls and timers', () => {
     fakeClock();
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     await runtime.handle('/presence', { home: false });
     await idle(runtime);
     await runtime.handle('/holiday', { active: true, returnAt: Date.now() + 3600000, preheatMinutes: 30 });
@@ -622,9 +633,9 @@ describe('bridge-owned controls and timers', () => {
     fakeClock();
     const original = await fixture();
     await configure(original.runtime, true);
-    await original.runtime.handle('/controls/settings', { awayDelayMinutes: 30 });
     await original.runtime.handle('/presence', { home: true });
     await idle(original.runtime);
+    await original.runtime.handle('/presence/hold', { until: Date.now() + 1800000 });
     await original.runtime.handle('/presence', { home: false });
     await original.runtime.close();
     jest.advanceTimersByTime(3600000);
@@ -872,7 +883,6 @@ describe('temporary overrides', () => {
     fakeClock();
     const { runtime, transport } = await fixture();
     await configure(runtime, true);
-    await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
     await runtime.handle('/presence', { home: true });
     await idle(runtime);
     const plan = await review(runtime);
@@ -1098,7 +1108,6 @@ test('failed expiry retains latest occupancy for the later explicit resume', asy
   jest.useFakeTimers({ now: Date.UTC(2026, 10, 7, 12), doNotFake: ['setImmediate', 'nextTick'] });
   const { runtime, transport, overrideTransport } = await fixture();
   await configure(runtime, true);
-  await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
   await runtime.handle('/presence', { home: true });
   await idle(runtime);
   const response = await runtime.handle('/overrides/preview', { deviceId: 'room-a', temperature: 23, endsAt: Date.now() + 1000 });
@@ -1137,7 +1146,6 @@ test('temperature history writes are batched and shutdown flushes the final genu
 test('resuming a temporary temperature never retries an unrelated failed programme upload', async () => {
   const { runtime, transport } = await fixture();
   await configure(runtime, true);
-  await runtime.handle('/controls/settings', { awayDelayMinutes: 0 });
   await runtime.handle('/presence', { home: true });
   await idle(runtime);
   transport.apply.mockResolvedValueOnce({ status: 'failed', backup: transport.snapshot('room-a'),
@@ -1163,6 +1171,7 @@ test('a failed deadline save stops policy changes until explicit recovery', asyn
   await configure(runtime, true);
   await runtime.handle('/presence', { home: true });
   await idle(runtime);
+  await runtime.handle('/presence/hold', { until: Date.now() + 1800000 });
   await runtime.handle('/presence', { home: false });
   jest.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('Disk temporarily unavailable'));
   jest.advanceTimersByTime(30 * 60000);

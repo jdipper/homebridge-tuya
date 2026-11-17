@@ -121,11 +121,6 @@ function householdProgrammeContext(view, formatDate = value => new Date(value).t
   if (holiday.preheating) { return 'Holiday preheat: Home programme requested before your return.'; }
   if (holiday.active) { return 'Holiday programme requested. Holiday takes priority; presence is remembered for your return.'; }
   if (presence.holdUntil) { return `Guest hold: Home programme requested until ${formatDate(presence.holdUntil)}.`; }
-  if (presence.pendingAwayAt) {
-    const current = householdProgrammeIntent(view);
-    return `Away scheduled for ${formatDate(presence.pendingAwayAt)}.${current === 'home' ? ' Home remains requested until then.'
-      : current === 'away' ? ' Away is already requested.' : ' No household programme is currently requested.'}`;
-  }
   const profile = householdProgrammeIntent(view);
   return profile === 'home' ? 'Someone is home. Home programme requested.'
     : profile === 'away' ? 'Everyone is away. Away programme requested.' : 'Presence has not been set.';
@@ -752,23 +747,6 @@ if (typeof module === 'object' && module.exports) {
     container.replaceChildren();
     const presence = state.view.presence || {};
     const holiday = state.view.holiday || {};
-    const delay = element('div', 'control-group');
-    delay.append(element('h4', '', 'Leaving home'));
-    const away = field('Wait before Away (minutes)', 'household:away', {
-      type: 'number', value: presence.awayDelayMinutes ?? 30, min: 0, max: 1440, step: 1,
-    });
-    delay.append(away.wrapper, button('Save delay', async () => {
-      const minutes = Number(away.input.value);
-      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) {
-        showMessage('Enter a whole number of minutes from 0 to 1440.', 'error');
-        return;
-      }
-      try {
-        await action('/controls/settings', { awayDelayMinutes: minutes }, 'Away delay saved. Arriving home cancels the countdown.');
-        forgetForm('household:away');
-      } catch { /* The action displays the error. */ }
-    }));
-    delay.append(element('p', 'schedule-help', 'The delay starts when the last person leaves. Home resumes immediately when someone arrives. Shortening an active countdown can select Away immediately.'));
     const guests = element('div', 'control-group');
     guests.append(element('h4', '', 'Guests staying home'));
     const hold = field('Keep Home programme until', 'household:hold', {
@@ -819,13 +797,13 @@ if (typeof module === 'object' && module.exports) {
     if (holiday.recoveryRequired) {
       returning.append(element('p', 'schedule-notice', 'The holiday return could not be confirmed. Check the room sync results and select the required household programme.'));
     }
-    container.append(delay, guests, returning);
+    container.append(guests, returning);
     if (state.view.controls && state.view.controls.recoveryRequired) {
       const recovery = element('div', 'control-group recovery-notice');
       recovery.append(element('h4', '', 'Review interrupted household changes'),
         element('p', 'schedule-notice', state.view.controls.recoveryRequired),
         button('Review & resume household control', () => {
-          if (window.confirm('Reconcile overdue holiday, guest-hold and presence timers now? This can upload the selected saved programme and activate scheduled mode on enrolled thermostats. Temporary temperatures that need recovery are handled separately in each room.')) {
+          if (window.confirm('Reconcile overdue holiday and guest-hold timers now? This can upload the selected saved programme and activate scheduled mode on enrolled thermostats. Temporary temperatures that need recovery are handled separately in each room.')) {
             action('/controls/recover', { confirm: true }, 'Household control recovery requested. Check each room’s confirmed programme.').catch(() => {});
           }
         }));

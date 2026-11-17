@@ -3,8 +3,6 @@ export interface ThermostatControlPolicy {
   version: 1;
   actualHome: boolean | null;
   effectiveHome: boolean | null;
-  awayDelayMinutes: number;
-  pendingAwayAt: number | null;
   holdUntil: number | null;
   holidayActive: boolean;
   returnAt: number | null;
@@ -14,7 +12,7 @@ export interface ThermostatControlPolicy {
 }
 
 export function createThermostatControlPolicy(actualHome: boolean | null = null, holidayActive = false): ThermostatControlPolicy {
-  return { version: 1, actualHome, effectiveHome: actualHome, awayDelayMinutes: 30, pendingAwayAt: null,
+  return { version: 1, actualHome, effectiveHome: actualHome,
     holdUntil: null, holidayActive, returnAt: null, preheatMinutes: 0, preheating: false, recoveryRequired: null };
 }
 
@@ -44,13 +42,9 @@ export function evaluateThermostatControlPolicy(input: ThermostatControlPolicy, 
   if (next.holdUntil !== null && next.holdUntil <= now) {
     next.holdUntil = null;
   }
-  if (next.pendingAwayAt !== null && next.pendingAwayAt <= now) {
-    next.pendingAwayAt = null;
-    next.effectiveHome = next.actualHome;
-  }
   if (next.actualHome === true || (next.holdUntil !== null && next.holdUntil > now)) {
     next.effectiveHome = true;
-  } else if (next.pendingAwayAt === null) {
+  } else {
     next.effectiveHome = next.actualHome;
   }
   if (next.holidayActive && next.returnAt !== null) {
@@ -83,7 +77,7 @@ export function policyDeadlines(policy: ThermostatControlPolicy): number[] {
   if (policy.recoveryRequired) {
     return [];
   }
-  const deadlines = [policy.pendingAwayAt, policy.holdUntil,
+  const deadlines = [policy.holdUntil,
     policy.holidayActive ? policy.returnAt : null,
     policy.holidayActive && !policy.preheating && policy.returnAt !== null && policy.preheatMinutes > 0
       ? policy.returnAt - policy.preheatMinutes * 60000 : null];
@@ -100,14 +94,18 @@ export function restoreThermostatControlPolicy(value: unknown, fallbackHome: boo
   if (!policy || policy.version !== 1 || (policy.actualHome !== null && typeof policy.actualHome !== 'boolean')
     || (policy.effectiveHome !== null && typeof policy.effectiveHome !== 'boolean')
     || typeof policy.holidayActive !== 'boolean' || typeof policy.preheating !== 'boolean'
-    || ![policy.pendingAwayAt, policy.holdUntil, policy.returnAt].every(item => item === null
+    || ![policy.holdUntil, policy.returnAt].every(item => item === null
       || (typeof item === 'number' && Number.isSafeInteger(item) && item >= 0))
     || !(policy.recoveryRequired === null || typeof policy.recoveryRequired === 'string')) {
     throw new Error('Invalid saved household heating policy.');
   }
-  policyMinutes(policy.awayDelayMinutes, 'Away delay', 1440);
   policyMinutes(policy.preheatMinutes, 'Preheat lead', 1440);
-  const restored = { ...policy };
+  // Ignore the removed Away countdown in older files; it must never be resumed.
+  const restored: ThermostatControlPolicy = {
+    version: 1, actualHome: policy.actualHome, effectiveHome: policy.effectiveHome,
+    holdUntil: policy.holdUntil, holidayActive: policy.holidayActive, returnAt: policy.returnAt,
+    preheatMinutes: policy.preheatMinutes, preheating: policy.preheating, recoveryRequired: policy.recoveryRequired,
+  };
   if (policyDeadlines(restored).some(deadline => deadline <= now)) {
     restored.recoveryRequired = 'A heating policy deadline passed while Homebridge was stopped. Review and resume it explicitly.';
   }

@@ -19,8 +19,8 @@ profiles is a power on/off schedule.
 
 The plugin exposes two separate HomeKit switch accessories:
 
-- **Heating Home**: on ends Holiday and selects Home; off selects Away after the
-  configured delay when Holiday is not active.
+- **Heating Home**: on ends Holiday and selects Home; off selects Away immediately
+  when Holiday is not active.
 - **Heating Holiday**: on selects Holiday regardless of household presence. Turning it off
   returns to the selected Home/Away state.
 
@@ -44,8 +44,9 @@ during Holiday remembers absence without cancelling Holiday. Holiday can end
 manually or at an optional return time. Set the initial household presence before
 using the controls; unknown presence is never assumed to mean that the home is empty.
 
-The default Away grace is 30 minutes; Home resumes as soon as someone arrives.
-The editor can change this delay, including setting zero for immediate Away.
+Home/Away selections start immediately, with no Homebridge departure grace
+period. Any delay belongs in the external automation before its switch command.
+Old saved Away countdowns are discarded and the delay setting is no longer shown.
 A guest hold keeps the Home programme selected until its chosen deadline even
 when all household members are out. Holiday takes priority over a guest hold.
 Actual occupancy remains visible separately from the effective heating choice.
@@ -125,8 +126,7 @@ need applying.
 
 The Household panel reports progress across rooms enabled for automatic changes:
 how many have confirmed the selected programme, which are updating or waiting,
-and which need attention. An Away delay shows its scheduled time while Home
-continues. Holiday, guest holds, preheat and recovery are shown separately from
+and which need attention. Holiday, guest holds, preheat and recovery are shown separately from
 room confirmation. Rooms outside automatic control are excluded from the total.
 
 Room cards show their programme result and last successful confirmation time
@@ -222,6 +222,26 @@ example, Holiday off starts its own fresh read and Home/Away application after
 the earlier operation finishes. It never retries the failed Holiday request.
 If no different selection is waiting, read the device and explicitly retry after
 reconciling the programme.
+
+A newer household selection also supersedes an upload already running. The
+transport waits for any submitted command to finish, then stops sending obsolete
+events and skips obsolete mode activation. The latest request gets a fresh
+baseline and full verification. An already-sent command cannot be recalled;
+programme uploads still take the time needed for Tuya commands and readbacks.
+
+## Departure delays in external automations
+
+An external delayed Away action must be cancelled or invalidated when anyone
+returns, before selecting Home. Merely selecting Home does not stop a shortcut
+that is still waiting and will later send Home off.
+
+A separate pending-departure helper can be armed on departure and cleared on
+return. The delayed shortcut must check it immediately before sending Away.
+Do not use Heating Home as that flag: it remains on while an external delay is
+waiting, and Holiday masks its display. If departure runs can overlap, use a
+restartable timer or per-run identifier as well, so an older run cannot complete
+a newer departure early. These helpers belong to the external automation;
+this plugin does not create them or cancel a running Apple shortcut.
 
 ## Process boundary
 

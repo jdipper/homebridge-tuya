@@ -27,9 +27,10 @@ async function fixture(options: {unknownWrite?: boolean; partial?: boolean} = {}
   const device = {id: 'test-owned-room', name: 'Thermostat', online: true, product_id: 'lmtejj3f4kafi2k1',
     status: [{code: 'temp_unit_convert', value: 'c'}, {code: 'temp_current', value: 180}, {code: 'temp_set', value: 200}]} as unknown as TuyaDevice;
   let native = programmeToFastWarm(week()), mode = 'smart', grouping = 0, connected = true;
-  let raw: any;
+  const rawListeners = new Set<any>();
+  const raw = (...args: any[]) => {for (const listener of rawListeners) listener(...args);};
   const connections = new Set<any>();
-  const mq: any = {addRawMessageListener: (listener: any) => {raw = listener;}, removeRawMessageListener: () => undefined,
+  const mq: any = {addRawMessageListener: (listener: any) => rawListeners.add(listener), removeRawMessageListener: (listener: any) => rawListeners.delete(listener),
     addConnectionListener: (listener: any) => connections.add(listener), removeConnectionListener: (listener: any) => connections.delete(listener),
     isConnected: () => connected};
   const calls: {kind: string; properties?: any}[] = [];

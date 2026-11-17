@@ -34,9 +34,11 @@ async function fixture(blockAuth = true) {
   const device = {id: 'owned-wire-room', name: 'Thermostat', online: true, product_id: 'lmtejj3f4kafi2k1',
     status: [{code: 'temp_unit_convert', value: 'c'}, {code: 'temp_set', value: 200}]} as unknown as TuyaDevice;
   const native = programmeToFastWarm(programme());
-  const connections = new Set<any>(); let connected = true, raw: any, controlReads = 0, blocked = false;
-  const mq: any = {isConnected: () => connected, addRawMessageListener: (listener: any) => {raw = listener;},
-    removeRawMessageListener: () => undefined, addConnectionListener: (listener: any) => connections.add(listener),
+  const connections = new Set<any>(), rawListeners = new Set<any>();
+  const raw = (...args: any[]) => {for (const listener of rawListeners) listener(...args);};
+  let connected = true, controlReads = 0, blocked = false;
+  const mq: any = {isConnected: () => connected, addRawMessageListener: (listener: any) => rawListeners.add(listener),
+    removeRawMessageListener: (listener: any) => rawListeners.delete(listener), addConnectionListener: (listener: any) => connections.add(listener),
     removeConnectionListener: (listener: any) => connections.delete(listener)};
   const entered = deferred(), release = deferred();
   jest.spyOn(api, '_refreshAccessTokenIfNeed').mockImplementation(async route => {

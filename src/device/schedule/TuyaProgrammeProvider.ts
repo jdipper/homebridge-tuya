@@ -6,22 +6,28 @@ import TuyaDevice, { TuyaDeviceStatus } from '../TuyaDevice';
 import TuyaDeviceManager, { ThermostatTemperatureObservation } from '../TuyaDeviceManager';
 import { getFastWarmSetTemperatureReport, isFastWarmThermostat } from '../profile/FastWarmThermostat';
 import {
-  collectFastWarmSchedule, encodeFastWarmSchedule, FASTWARM_SCHEDULE_DAYS, FastWarmScheduleEventId,
+  collectFastWarmSchedule, decodeFastWarmSchedule, encodeFastWarmSchedule, FASTWARM_SCHEDULE_DAYS, FastWarmScheduleEventId,
   FastWarmScheduleState,
 } from './FastWarmSchedule';
-import FastWarmScheduleManager, { FastWarmProgrammeWriteMode, FastWarmScheduleSnapshot, FastWarmSelectionSuperseded } from './FastWarmScheduleManager';
+import FastWarmScheduleManager, {
+  FastWarmProgrammeWriteMode, FastWarmScheduleSnapshot, FastWarmSelectionSuperseded,
+} from './FastWarmScheduleManager';
 import TuyaProgrammeProviderServer from './TuyaProgrammeProviderServer';
 import { FastWarmProgrammeGroup } from './FastWarmGroupCommandBroker';
+import { FastWarmActiveTargetContext, getFastWarmActivePeriod, validateFastWarmActiveTarget } from './FastWarmActiveTarget';
 
 const WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
 type WeeklyProgramme = Record<typeof WEEKDAYS[number], { startMinute: number; targetC: number }[]>;
 type Transport = Pick<FastWarmScheduleManager, 'read' | 'apply' | 'activateProgramme' | 'close'>
-  & Partial<Pick<FastWarmScheduleManager, 'prepareAutomatic' | 'applyAutomatic' | 'discardAutomatic' | 'invalidateAutomatic' | 'invalidateGroupCapabilities'>>;
-interface NativeSettings { mode: string; grouping: number }
+  & Partial<Pick<FastWarmScheduleManager, 'prepareAutomatic' | 'applyAutomatic' | 'discardAutomatic'
+  | 'invalidateAutomatic' | 'invalidateGroupCapabilities'>>;
+interface NativeSettings {
+  mode: string; grouping: number; targetC?: number; targetReadAt?: number; targetReportedAt?: number;
+}
 interface Preview {
   token: string; deviceId: string; programme: WeeklyProgramme; expiresAt: number; changesRequired: boolean;
   fingerprint: string; settings: NativeSettings;
-  requireScheduled: boolean;
+  requireScheduled: boolean; activeTarget?: FastWarmActiveTargetContext;
 }
 export interface TuyaProgrammeProviderOptions {
   programmeWriteModes?: { deviceId: string; mode: Exclude<FastWarmProgrammeWriteMode, 'single-events'> }[];
@@ -30,12 +36,14 @@ export interface TuyaProgrammeProviderOptions {
 interface AutomaticLease {
   token: string; deviceId: string; programme: WeeklyProgramme; managerToken: string;
   backup: FastWarmScheduleSnapshot; expiresAt: number; consumed: boolean; cancelled: boolean;
-  proceed: (apply: boolean) => void; result: Promise<unknown>;
+  proceed: (apply: boolean) => void; result: Promise<unknown>; activeTarget?: FastWarmActiveTargetContext;
 }
 interface DeviceObservation {
   id: string; at: number; sourceAt?: number; currentTemperature?: number; targetTemperature?: number;
   online: boolean; unit?: 'c' | 'f';
 }
+class NativeSettingsChanged extends Error {}
+
 const MAX_OBSERVATIONS_PER_ZONE = 200;
 const MAX_OBSERVATIONS = 2000;
 const MAX_OBSERVATION_ZONES = 64;
@@ -99,6 +107,13 @@ export default class TuyaProgrammeProvider {
   private readonly onlineStates = new Map<string, boolean>();
   private readonly writeModes = new Map<string, FastWarmProgrammeWriteMode>();
   private closed = false;
+  private connectionRevision = 0;
+  private readonly availabilityRevisions = new Map<string, number>();
+  private readonly targetRevisions = new Map<string, number>();
+  private readonly controlRevisions = new Map<string, number>();
+  private readonly programmeRevisions = new Map<string, number>();
+  private readonly targetWaits = new Map<string, () => void>();
+  private readonly targetHints = new Map<string, {targetC: number; receivedAt: number; sourceAt?: number}>();
   private automaticLeases = new Map<string, AutomaticLease>();
   private readonly automaticJournalPath: string;
 
@@ -125,6 +140,8 @@ export default class TuyaProgrammeProvider {
     this.automaticJournalPath = path.join(path.dirname(persistPath), 'heating-operations', `tuya-${instanceId}`);
     this.server = new TuyaProgrammeProviderServer(persistPath, instanceId, this.handle,
       Boolean(this.schedules.prepareAutomatic && this.schedules.applyAutomatic && this.schedules.discardAutomatic));
+    manager.mq?.addConnectionListener?.(this.onConnection);
+    manager.mq?.addRawMessageListener?.(this.onRawControls);
     // Cache the initial availability without manufacturing a history observation.
     for (const device of this.devices()) {
       this.onlineStates.set(device.id, device.online);
@@ -150,6 +167,11 @@ export default class TuyaProgrammeProvider {
       this.manager.removeListener(TuyaDeviceManager.Events.THERMOSTAT_OBSERVATION, this.onTemperatureObservation);
       this.manager.removeListener(TuyaDeviceManager.Events.DEVICE_STATUS_UPDATE, this.onDeviceStatus);
       this.manager.removeListener(TuyaDeviceManager.Events.DEVICE_INFO_UPDATE, this.onDeviceInfo);
+    }
+    this.manager.mq?.removeConnectionListener?.(this.onConnection);
+    this.manager.mq?.removeRawMessageListener?.(this.onRawControls);
+    for (const finish of [...this.targetWaits.values()]) {
+      finish();
     }
     this.previews.clear();
     for (const lease of this.automaticLeases.values()) {
@@ -178,11 +200,12 @@ export default class TuyaProgrammeProvider {
       }
       case '/provider/prepare-automatic': {
         const id = this.deviceId(body.deviceId);
-        if (body.requireScheduled !== true || Object.keys(body).some(key => !['deviceId', 'programme', 'requireScheduled'].includes(key))) {
+        if (body.requireScheduled !== true
+          || Object.keys(body).some(key => !['deviceId', 'programme', 'requireScheduled', 'activeTarget'].includes(key))) {
           throw new Error('Automatic selections must require Scheduled mode and contain only a complete programme.');
         }
         const programme = canonical(programmeToFastWarm(body.programme));
-        return reply({preview: await this.prepareAutomatic(id, programme)});
+        return reply({preview: await this.prepareAutomatic(id, programme, validateFastWarmActiveTarget(body.activeTarget))});
       }
       case '/provider/apply-automatic': {
         const lease = typeof body.token === 'string' ? this.automaticLeases.get(body.token) : undefined;
@@ -204,7 +227,10 @@ export default class TuyaProgrammeProvider {
         const notApplied = Boolean(lease && !lease.consumed);
         if (lease) {
           lease.cancelled = true;
-          if (!lease.consumed) {lease.consumed = true; lease.proceed(false);}
+          this.targetWaits.get(lease.deviceId)?.();
+          if (!lease.consumed) {
+            lease.consumed = true; lease.proceed(false);
+          }
         }
         return reply({cancelled: Boolean(lease), notApplied});
       }
@@ -231,10 +257,14 @@ export default class TuyaProgrammeProvider {
           throw new Error('Automatic programme preparation must explicitly require Scheduled mode.');
         }
         const requireScheduled = body.requireScheduled === true;
+        const activeTarget = validateFastWarmActiveTarget(body.activeTarget);
         return this.enqueue(id, async () => {
           const zone = await this.read(id);
           const snapshot = this.snapshots.get(id)!;
           this.requireSevenDayMode(id);
+          if (activeTarget) {
+            this.requireFreshTarget(this.settings.get(id)!);
+          }
           if (requireScheduled && !zone.scheduled) {
             throw new Error('Automatic changes require the thermostat to be in Scheduled mode.');
           }
@@ -243,14 +273,16 @@ export default class TuyaProgrammeProvider {
           }
           const preview: Preview = {
             token: randomUUID(), deviceId: id, programme, expiresAt: Date.now() + 5 * 60_000,
-            changesRequired: JSON.stringify(zone.programme) !== JSON.stringify(programme) || !zone.scheduled,
+            changesRequired: JSON.stringify(zone.programme) !== JSON.stringify(programme) || !zone.scheduled
+              || Boolean(activeTarget && zone.targetC !== getFastWarmActivePeriod(programme, activeTarget).targetC),
             fingerprint: snapshot.fingerprint, settings: { ...this.settings.get(id)! },
-            requireScheduled,
+            requireScheduled, ...(activeTarget ? {activeTarget} : {}),
           };
           this.expirePreviews();
           this.previews.set(preview.token, preview);
           const { token, deviceId, expiresAt, changesRequired } = preview;
-          return reply({ preview: { token, deviceId, programme, expiresAt, changesRequired, requireScheduled } });
+          return reply({ preview: { token, deviceId, programme, expiresAt, changesRequired, requireScheduled,
+            ...(activeTarget ? {activeTarget} : {}) } });
         });
       }
       case '/provider/apply': {
@@ -299,7 +331,8 @@ export default class TuyaProgrammeProvider {
     };
     return {
       id, name: device.room_name ?? device.name, roomName: device.room_name, online: device.online,
-      measuredC: temperature('temp_current'), targetC: temperature('temp_set'),
+      measuredC: temperature('temp_current'), targetC: celsius ? settings?.targetC ?? temperature('temp_set') : null,
+      ...(celsius && settings?.targetReadAt ? {targetReadAt: settings.targetReadAt} : {}),
       mode: settings?.mode ?? 'unknown', scheduled: settings?.mode === 'smart' && (settings.grouping & 1) === 0,
       readAt: snapshot?.finishedAt ?? observation?.receivedAt ?? Date.now(),
       temperatureReceivedAt: observation?.receivedAt, temperatureReportedAt: observation?.reportedAt,
@@ -320,18 +353,276 @@ export default class TuyaProgrammeProvider {
 
   private async readSettings(id: string): Promise<NativeSettings> {
     this.requireAvailable(id);
+    const revision = () => [this.targetRevisions.get(id) ?? 0, this.controlRevisions.get(id) ?? 0,
+      this.programmeRevisions.get(id) ?? 0, this.availabilityRevisions.get(id) ?? 0, this.connectionRevision].join(':');
+    const before = revision();
     const response = await this.manager.api.request('get', `/v2.0/cloud/thing/${id}/shadow/properties`, {
-      codes: 'ControlMode,Event_Adaptive_Set',
+      codes: 'ControlMode,Event_Adaptive_Set,SetTemp',
     }, null, { attempts: 1, timeoutMs: 10000 });
+    // A shadow reply may lag a newer physical/MQTT edit received while its GET
+    // was pending. Do not install that older value as fresh protected evidence.
+    if (this.closed || revision() !== before) {
+      throw new NativeSettingsChanged('The thermostat target, controls or connection changed during the native read.');
+    }
     const properties = response.success && response.result?.properties;
     const mode = Array.isArray(properties) ? properties.find(item => item.code === 'ControlMode')?.value : undefined;
     const grouping = Array.isArray(properties) ? properties.find(item => item.code === 'Event_Adaptive_Set')?.value : undefined;
     if (typeof mode !== 'string' || typeof grouping !== 'number' || !Number.isInteger(grouping) || grouping < 0) {
       throw new Error('Could not read the thermostat programme mode and grouping.');
     }
-    const settings = { mode, grouping };
+    const targetProperty = Array.isArray(properties) ? properties.find(item => item.code === 'SetTemp') : undefined;
+    const target = getFastWarmSetTemperatureReport(targetProperty);
+    const receivedAt = Date.now();
+    const hint = this.targetHints.get(id);
+    if (target && hint && target.value / 10 !== hint.targetC
+      && (target.time === undefined || target.time <= (hint.sourceAt ?? hint.receivedAt))) {
+      throw new NativeSettingsChanged('The native shadow target predates a different accepted thermostat target report.');
+    }
+    const validTarget = target && (target.time === undefined || target.time <= receivedAt + 5000);
+    const settings: NativeSettings = { mode, grouping, ...(validTarget
+      ? {targetC: target.value / 10, targetReadAt: receivedAt, targetReportedAt: target.time} : {}) };
     this.settings.set(id, settings);
     return settings;
+  }
+
+  private requireFreshTarget(settings: NativeSettings): void {
+    if (!Number.isFinite(settings.targetC) || !Number.isSafeInteger(settings.targetReadAt)) {
+      throw new Error('A fresh native target temperature is required before current-period activation.');
+    }
+  }
+
+  private targetWait(id: string, milliseconds: number): Promise<void> {
+    return new Promise(resolve => {
+      const finish = () => {
+        clearTimeout(timer); this.targetWaits.delete(id); resolve();
+      };
+      const timer = setTimeout(finish, Math.max(1, milliseconds));
+      this.targetWaits.set(id, finish);
+    });
+  }
+
+  /** MQTT is a wake-up hint only; the subsequent native shadow GET remains the proof. */
+  private async waitForTargetHint(id: string, targetC: number, submittedAt: number): Promise<void> {
+    const received = () => {
+      const hint = this.targetHints.get(id);
+      return Boolean(hint && hint.targetC === targetC && hint.receivedAt >= submittedAt
+        && (hint.sourceAt === undefined || hint.sourceAt >= submittedAt - 1000));
+    };
+    if (!received()) {
+      // Real ET-63 reports arrived 4–8 seconds after accepted programme/target
+      // commands. Waiting locally avoids exhausting three predictably stale GETs.
+      await this.targetWait(id, 10000);
+    }
+    if (received() && !this.closed) {
+      await this.targetWait(id, 250);
+    }
+  }
+
+  private onConnection = () => {
+    this.connectionRevision++;
+    for (const finish of [...this.targetWaits.values()]) {
+      finish();
+    }
+  };
+
+  private onRawControls = (_topic: string, protocol: number, message: unknown) => {
+    if (protocol !== 4 || !message || typeof message !== 'object') {
+      return;
+    }
+    const payload = message as {devId?: unknown; status?: unknown};
+    if (typeof payload.devId !== 'string' || !this.devices().some(device => device.id === payload.devId)
+      || !Array.isArray(payload.status)) {
+      return;
+    }
+    for (const status of payload.status) {
+      if (!status || typeof status !== 'object') {
+        continue;
+      }
+      const item = status as Record<string, unknown>, dp = item.dpId ?? item.dp_id;
+      const settings = this.settings.get(payload.devId);
+      const modeReport = item.code === 'ControlMode' || dp === 103 || dp === '103'
+        || Object.prototype.hasOwnProperty.call(item, '103');
+      const modeValue = Object.prototype.hasOwnProperty.call(item, '103') ? item['103'] : item.value;
+      const nativeMode = typeof modeValue === 'number' ? ['holiday', 'smart', 'hold'][modeValue] : modeValue;
+      const groupingReport = item.code === 'Event_Adaptive_Set' || dp === 110 || dp === '110'
+        || Object.prototype.hasOwnProperty.call(item, '110');
+      const groupingValue = Object.prototype.hasOwnProperty.call(item, '110') ? item['110'] : item.value;
+      if ((modeReport && nativeMode !== settings?.mode) || (groupingReport && groupingValue !== settings?.grouping)) {
+        this.controlRevisions.set(payload.devId, (this.controlRevisions.get(payload.devId) ?? 0) + 1);
+        this.targetWaits.get(payload.devId)?.();
+      }
+      if (item.code === 'week_program' || dp === 119 || dp === '119' || Object.prototype.hasOwnProperty.call(item, '119')) {
+        try {
+          const packet = decodeFastWarmSchedule(String(Object.prototype.hasOwnProperty.call(item, '119') ? item['119'] : item.value));
+          const snapshot = this.snapshots.get(payload.devId);
+          if (snapshot && snapshot.state.days.filter(day => day.day & packet.dayMask).some(day => packet.events.some(event =>
+            JSON.stringify(day.events[event.event]) !== JSON.stringify(event)))) {
+            this.programmeRevisions.set(payload.devId, (this.programmeRevisions.get(payload.devId) ?? 0) + 1);
+            this.targetWaits.get(payload.devId)?.();
+          }
+        } catch { /* An unaccepted malformed packet cannot establish a new programme. */ }
+      }
+      const target = getFastWarmSetTemperatureReport(item);
+      if (target && (target.value / 10 !== settings?.targetC || target.time === undefined
+        || settings?.targetReportedAt === undefined || target.time > settings.targetReportedAt)) {
+        this.targetRevisions.set(payload.devId, (this.targetRevisions.get(payload.devId) ?? 0) + 1);
+      }
+    }
+  };
+
+  /** The current-period correction is a separate once-only native command, never a mode change. */
+  private async alignActiveTarget(id: string, programme: WeeklyProgramme, context: FastWarmActiveTargetContext,
+    baseline: NativeSettings, latest: NativeSettings, isCurrent: () => boolean,
+    beforeTarget: (targetC: number, startsAt: number, endsAt: number) => Promise<void>) {
+    // MQTT cache invalidation must never mutate the protected native baseline.
+    baseline = {...baseline}; latest = {...latest};
+    let writeAttempted = false;
+    const failure = (status: 'conflict' | 'unconfirmed' | 'unknown', reason: string, superseded = false) => ({
+      status, reason, writeAttempted, readback: this.zone(id), ...(superseded ? {superseded: true} : {}),
+    });
+    const connection = this.connectionRevision, availability = this.availabilityRevisions.get(id) ?? 0;
+    const controlsRevision = this.controlRevisions.get(id) ?? 0;
+    const programmeRevision = this.programmeRevisions.get(id) ?? 0;
+    const protectedStatus = () => JSON.stringify(this.manager.getDevice(id)?.status
+      .filter(item => ['mode', 'switch', 'temp_unit_convert'].includes(item.code)).map(item => [item.code, item.value]));
+    const initialStatus = protectedStatus();
+    const deviceContextCurrent = () => {
+      if (this.closed || this.connectionRevision !== connection
+        || (this.availabilityRevisions.get(id) ?? 0) !== availability || (this.controlRevisions.get(id) ?? 0) !== controlsRevision
+        || (this.programmeRevisions.get(id) ?? 0) !== programmeRevision
+        || this.manager.mq?.isConnected?.() === false || protectedStatus() !== initialStatus) {
+        return false;
+      }
+      try {
+        this.requireAvailable(id); return true;
+      } catch {
+        return false;
+      }
+    };
+    const current = () => isCurrent() && deviceContextCurrent();
+    try {
+      this.requireFreshTarget(baseline); this.requireFreshTarget(latest);
+      if (!current()) {
+        return failure('conflict', 'The selection or device connection changed before target activation.', !isCurrent());
+      }
+      if (latest.mode !== 'smart' || latest.grouping !== baseline.grouping || (latest.grouping & 1) !== 0) {
+        return failure('conflict', 'The thermostat mode or grouping changed before target activation.');
+      }
+      let period = getFastWarmActivePeriod(programme, context);
+      if (latest.targetC === period.targetC) {
+        return {status: 'confirmed' as const, reason: 'The complete programme, Scheduled mode and current target are confirmed.',
+          writeAttempted, readback: this.zone(id)};
+      }
+      // Do not race a native event. A single bounded wait/read can observe its
+      // result; no unsuccessful target command is ever replayed.
+      if (period.endsAt - Date.now() <= 15000) {
+        await this.targetWait(id, period.endsAt - Date.now() + 1000);
+        if (!current()) {
+          return failure('conflict', 'The selection or connection changed while waiting for the native period.', !isCurrent());
+        }
+        latest = await this.readSettings(id); this.requireFreshTarget(latest);
+        period = getFastWarmActivePeriod(programme, context);
+        if (latest.mode !== 'smart' || latest.grouping !== baseline.grouping || (latest.grouping & 1) !== 0) {
+          return failure('conflict', 'The thermostat controls changed at the native period boundary.');
+        }
+        if (latest.targetC === period.targetC) {
+          return {status: 'confirmed' as const, reason: 'The complete programme and native period target are confirmed.',
+            writeAttempted, readback: this.zone(id)};
+        }
+      }
+      if (latest.targetC !== baseline.targetC || (latest.targetReportedAt !== baseline.targetReportedAt
+        && latest.targetReportedAt !== undefined && baseline.targetReportedAt !== undefined)) {
+        return failure('conflict', 'The thermostat target changed during programme application; no target correction was sent.');
+      }
+      const targetRevision = this.targetRevisions.get(id) ?? 0;
+      // The acknowledged programme has been read back completely; leave a final
+      // device processing interval before a different native command.
+      await this.targetWait(id, 1000);
+      const guard = () => {
+        if (!current() || (this.targetRevisions.get(id) ?? 0) !== targetRevision) {
+          return false;
+        }
+        const actual = getFastWarmActivePeriod(programme, context);
+        return actual.startsAt === period.startsAt && actual.endsAt === period.endsAt && actual.targetC === period.targetC
+          && actual.endsAt - Date.now() > 15000;
+      };
+      if (!guard()) {
+        return failure('conflict', 'The selection, target or active period changed before target activation.', !isCurrent());
+      }
+      await beforeTarget(period.targetC, period.startsAt, period.endsAt);
+      let blocked = false;
+      const shouldProceed = () => {
+        let allowed = false;
+        try {
+          allowed = guard();
+        } catch {
+          allowed = false;
+        }
+        if (!allowed) {
+          blocked = true;
+        }
+        return allowed;
+      };
+      writeAttempted = true;
+      const targetSubmittedAt = Date.now();
+      const response = await this.manager.api.postOnce(`/v2.0/cloud/thing/${id}/shadow/properties/issue`, {
+        properties: JSON.stringify({SetTemp: Math.round(period.targetC * 10)}),
+      }, {timeoutMs: 10000, shouldProceed});
+      if (blocked) {
+        writeAttempted = false;
+        return failure('conflict', 'The authenticated dispatch guard stopped the target command.', !isCurrent());
+      }
+      if (response.success !== true) {
+        return failure('unknown', 'The target command was not confirmed. Do not automatically retry.');
+      }
+      // A successful HTTP reply is not proof that the device adopted the target.
+      // Recheck only the read side when the shadow still shows its baseline.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt === 0) {
+          await this.waitForTargetHint(id, period.targetC, targetSubmittedAt);
+        } else {
+          await this.targetWait(id, 1000);
+        }
+        let after: NativeSettings;
+        try {
+          after = await this.readSettings(id);
+        } catch (error) {
+          if (error instanceof NativeSettingsChanged && attempt < 2) {
+            continue;
+          }
+          throw error;
+        }
+        const actual = getFastWarmActivePeriod(programme, context);
+        if (after.mode !== 'smart' || after.grouping !== latest.grouping
+          || actual.startsAt !== period.startsAt || actual.endsAt !== period.endsAt) {
+          return failure('unknown', 'The native controls or programme period changed after a possible target write. '
+            + 'The target outcome is unknown; do not automatically retry.');
+        }
+        if (Number.isFinite(after.targetC) && after.targetReadAt && after.targetC === actual.targetC) {
+          const freshZone = this.zone(id);
+          if (freshZone.targetC !== actual.targetC || freshZone.targetReadAt !== after.targetReadAt) {
+            return failure('unknown', 'A newer target report invalidated verification after a possible target write.');
+          }
+          if (!deviceContextCurrent()) {
+            return failure('unknown', 'The device connection changed after a possible target write.');
+          }
+          if (!isCurrent()) {
+            return failure('conflict', 'The superseded target command finished and its native target was verified.', true);
+          }
+          return {status: 'confirmed' as const, reason: 'The complete programme, Scheduled mode and current target are confirmed.',
+            writeAttempted, readback: this.zone(id)};
+        }
+        if (after.targetC !== undefined && after.targetC !== baseline.targetC) {
+          return failure('unknown', 'A different native target appeared after a possible target write. No command was replayed.');
+        }
+        // Even a superseded command must finish its bounded read-only proof.
+        // Cancellation alone cannot prove a submitted target is no longer pending.
+      }
+      return failure('unknown', 'The programme was stored but its active target could not be verified after three reads. '
+        + 'Do not automatically retry.');
+    } catch (error) {
+      return failure(writeAttempted ? 'unknown' : 'conflict', text(error), !writeAttempted && !isCurrent());
+    }
   }
 
   private requireSevenDayMode(id: string) {
@@ -342,7 +633,7 @@ export default class TuyaProgrammeProvider {
   }
 
   /** Retain this provider queue across the controller's durable draft check; apply only signals its owner. */
-  private prepareAutomatic(id: string, programme: WeeklyProgramme): Promise<unknown> {
+  private prepareAutomatic(id: string, programme: WeeklyProgramme, activeTarget?: FastWarmActiveTargetContext): Promise<unknown> {
     if (!this.schedules.prepareAutomatic || !this.schedules.applyAutomatic || !this.schedules.discardAutomatic) {
       return Promise.reject(new Error('This provider does not support owned automatic baselines.'));
     }
@@ -365,13 +656,14 @@ export default class TuyaProgrammeProvider {
         resolveSignal = resolve;
       });
       const lease: AutomaticLease = {token, deviceId: id, programme, managerToken: baseline.token,
-        backup: baseline.backup, expiresAt, consumed: false, cancelled: false, proceed: value => resolveSignal(value), result};
+        backup: baseline.backup, expiresAt, consumed: false, cancelled: false, ...(activeTarget ? {activeTarget} : {}),
+        proceed: value => resolveSignal(value), result};
       this.automaticLeases.set(token, lease);
       const timer = setTimeout(() => lease.proceed(false), Math.max(1, expiresAt - Date.now())); timer.unref();
       prepared = true;
       resolvePreview!({token, deviceId: id, programme, expiresAt,
         changesRequired: JSON.stringify(canonical(baseline.backup.state)) !== JSON.stringify(programme),
-        requireScheduled: true, automaticFreshBaseline: true});
+        requireScheduled: true, automaticFreshBaseline: true, ...(activeTarget ? {activeTarget} : {})});
       try {
         if (!await signal || lease.cancelled || this.closed || Date.now() >= expiresAt) {
           resolveResult!({status: 'not-applied', reason: 'The automatic selection was cancelled or expired.', writeAttempted: false});
@@ -442,11 +734,16 @@ export default class TuyaProgrammeProvider {
             await this.automaticJournal(lease.token, journal, true);
           }
           initial = await this.readSettings(id);
+          if (lease.activeTarget) {
+            this.requireFreshTarget(initial);
+          }
           this.requireSevenDayMode(id);
           if (this.closed || Date.now() >= lease.expiresAt || initial.mode !== 'smart') {
             throw new Error('Automatic changes require fresh Scheduled mode and an unexpired owned baseline.');
           }
-          if (lease.cancelled) throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
+          if (lease.cancelled) {
+            throw new FastWarmSelectionSuperseded('The automatic selection was superseded before upload.');
+          }
           writePossible = planned > 0;
         },
       });
@@ -462,12 +759,29 @@ export default class TuyaProgrammeProvider {
       } else {
         const latest = result.status === 'no_changes' ? initial! : await this.readSettings(id);
         readback = this.zone(id);
-        controlsConfirmed = Boolean(initial && latest.mode === 'smart' && latest.mode === initial.mode && latest.grouping === initial.grouping
+        controlsConfirmed = Boolean(initial && latest.mode === 'smart' && latest.mode === initial.mode
+          && latest.grouping === initial.grouping
           && readback.programme && JSON.stringify(readback.programme) === JSON.stringify(lease.programme) && readback.scheduled);
         outcome = !lease.cancelled && controlsConfirmed
           ? {status: 'confirmed', reason: 'The complete programme and fresh Scheduled controls are confirmed.', writeAttempted, readback}
           : {status: 'conflict', reason: 'The mode, grouping or complete native week changed during automatic application.',
             writeAttempted, readback};
+      }
+      if (outcome.status === 'confirmed' && lease.activeTarget) {
+        const activation = await this.alignActiveTarget(id, lease.programme, lease.activeTarget, initial!, this.settings.get(id)!,
+          () => !this.closed && !lease.cancelled, async (targetC, startsAt, endsAt) => {
+            const create = !journal;
+            journal = {...(journal ?? {version: 1, operationId: lease.token, deviceId: id, startedAt: Date.now(),
+              state: 'in-flight', backup: lease.backup, desired: lease.programme, planned: 0,
+              writeOutcome: 'not-recorded-until-finished'}),
+            activeTargetIntent: {timeZone: lease.activeTarget!.timeZone, targetC, startsAt, endsAt,
+              outcome: 'not-recorded-until-finished'}};
+            await this.automaticJournal(lease.token, journal, create);
+            writePossible = true;
+          });
+        outcome = {...activation, writeAttempted: writeAttempted || activation.writeAttempted};
+        readback = activation.readback;
+        controlsConfirmed = activation.status === 'confirmed';
       }
       if (lease.cancelled && (result.superseded === true || controlsConfirmed)
         && !result.unknownOutcome && outcome.status !== 'confirmed' && outcome.status !== 'unknown') {
@@ -480,7 +794,8 @@ export default class TuyaProgrammeProvider {
       }
       return outcome;
     } catch (error) {
-      const outcome = {status: writePossible ? 'unknown' : 'not-applied', reason: text(error), writeAttempted: writePossible, readback};
+      const outcome = {status: writePossible ? 'unknown' : 'not-applied', reason: text(error),
+        writeAttempted: writePossible, readback};
       if (journal) {
         await this.automaticJournal(lease.token,
           {...journal, finishedAt: Date.now(), state: 'failed', result: outcome}, false).catch(() => undefined);
@@ -504,6 +819,12 @@ export default class TuyaProgrammeProvider {
         writeMode: this.writeModes.get(id) ?? 'single-events',
         beforeWrite: async () => {
           const current = await this.readSettings(id);
+          if (preview.activeTarget) {
+            this.requireFreshTarget(current); this.requireFreshTarget(preview.settings);
+            if (current.targetC !== preview.settings.targetC || current.targetReportedAt !== preview.settings.targetReportedAt) {
+              throw new Error('The thermostat target changed after preview; no programme or target was sent.');
+            }
+          }
           this.requireSevenDayMode(id);
           if (preview.expiresAt <= Date.now() || current.mode !== preview.settings.mode || current.grouping !== preview.settings.grouping
             || (preview.requireScheduled && current.mode !== 'smart')) {
@@ -543,6 +864,14 @@ export default class TuyaProgrammeProvider {
       // A complete fresh week and Scheduled mode are both required for confirmation.
       if (!readback.programme || JSON.stringify(readback.programme) !== JSON.stringify(preview.programme) || !readback.scheduled) {
         return { status: 'unconfirmed', reason: 'The complete programme and Scheduled mode were not confirmed.', writeAttempted, readback };
+      }
+      if (preview.activeTarget) {
+        const activation = await this.alignActiveTarget(id, preview.programme, preview.activeTarget,
+          latest.mode === 'smart' ? preview.settings : this.settings.get(id)!, this.settings.get(id)!, () => !this.closed,
+          async () => {
+            writeAttempted = true;
+          });
+        return {...activation, writeAttempted: writeAttempted || activation.writeAttempted};
       }
       return { status: 'confirmed', reason: 'The complete programme and Scheduled mode are confirmed.', writeAttempted, readback };
     } catch (error) {
@@ -621,12 +950,25 @@ export default class TuyaProgrammeProvider {
   };
 
   private onDeviceStatus = (device: TuyaDevice, statuses: TuyaDeviceStatus[]) => {
-    if (!Array.isArray(statuses)) {
+    if (!Array.isArray(statuses) || !isFastWarmThermostat(device) || !this.devices().some(item => item.id === device.id)) {
       return;
     }
     const target = statuses.find(item => item.code === 'temp_set');
     const report = target && getFastWarmSetTemperatureReport({ ...target, code: 'SetTemp' });
     if (report) {
+      const receivedAt = Date.now();
+      const previousHint = this.targetHints.get(device.id);
+      if ((report.time === undefined || report.time <= receivedAt + 5000)
+        && (previousHint?.sourceAt === undefined || report.time === undefined || report.time >= previousHint.sourceAt)) {
+        this.targetHints.set(device.id, {targetC: report.value / 10, receivedAt, sourceAt: report.time});
+        this.targetWaits.get(device.id)?.();
+      }
+      this.targetRevisions.set(device.id, (this.targetRevisions.get(device.id) ?? 0) + 1);
+      const settings = this.settings.get(device.id);
+      if (settings?.targetReadAt && report.value / 10 !== settings.targetC
+        && (report.time === undefined || report.time >= (settings.targetReportedAt ?? settings.targetReadAt))) {
+        this.settings.set(device.id, {mode: settings.mode, grouping: settings.grouping});
+      }
       this.recordObservation(device, { at: Date.now(), sourceAt: report.time, targetTemperature: report.value / 10,
         online: device.online, unit: this.unit(device) });
     }
@@ -640,6 +982,8 @@ export default class TuyaProgrammeProvider {
     const previous = this.onlineStates.get(device.id);
     this.onlineStates.set(device.id, device.online);
     if (previous !== undefined && previous !== device.online) {
+      this.availabilityRevisions.set(device.id, (this.availabilityRevisions.get(device.id) ?? 0) + 1);
+      this.targetWaits.get(device.id)?.();
       this.schedules.invalidateAutomatic?.(device.id);
       this.recordObservation(device, { at: Date.now(), online: device.online });
     }

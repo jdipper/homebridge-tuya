@@ -26,14 +26,14 @@ describe('FastWarm native target reports', () => {
   let api: TuyaOpenAPI;
   let manager: TuyaDeviceManager;
   let device: TuyaDevice;
-  let get: jest.SpiedFunction<TuyaOpenAPI['get']>;
+  let get: jest.SpiedFunction<TuyaOpenAPI['request']>;
   const target = () => device.status.find(item => item.code === 'temp_set')?.value;
 
   beforeEach(() => {
     jest.spyOn(Date, 'now').mockReturnValue(NOW);
     initLogger({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() });
     api = new TuyaOpenAPI(TuyaOpenAPI.Endpoints.EUROPE, 'test-access-id', 'test-key');
-    get = jest.spyOn(api, 'get').mockResolvedValue(shadow());
+    get = jest.spyOn(api, 'request').mockResolvedValue(shadow());
     manager = new TuyaDeviceManager(api);
     device = createDevice();
     manager.devices = [device];
@@ -47,7 +47,8 @@ describe('FastWarm native target reports', () => {
     manager.on(TuyaDeviceManager.Events.DEVICE_STATUS_UPDATE, listener);
     await manager.enrichDeviceStatus(device);
     expect(get).toHaveBeenCalledTimes(1);
-    expect(get).toHaveBeenCalledWith('/v2.0/cloud/thing/thermostat-1/shadow/properties', { codes: 'RoomTemper,SetTemp' });
+    expect(get).toHaveBeenCalledWith('get', '/v2.0/cloud/thing/thermostat-1/shadow/properties',
+      { codes: 'RoomTemper,SetTemp' }, null, { attempts: 1, timeoutMs: 10000 });
     expect(target()).toBe(220);
     expect(listener).toHaveBeenCalledWith(device, [{ code: 'temp_set', value: 220, t: NOW }]);
     expect(device.status.find(item => item.code === 'temp_current')?.value).toBe(195);
@@ -137,7 +138,8 @@ describe('FastWarm native target reports', () => {
   test.each(['f', 'unknown'])('does not interpret raw native targets when the standard unit is %s', async unit => {
     device.status.find(item => item.code === 'temp_unit_convert')!.value = unit;
     await manager.enrichDeviceStatus(device);
-    expect(get).toHaveBeenCalledWith('/v2.0/cloud/thing/thermostat-1/shadow/properties', { codes: 'RoomTemper' });
+    expect(get).toHaveBeenCalledWith('get', '/v2.0/cloud/thing/thermostat-1/shadow/properties',
+      { codes: 'RoomTemper' }, null, { attempts: 1, timeoutMs: 10000 });
     await manager.onMQTTMessage('test', 4, { devId: device.id, status: [{ dpId: 102, value: 230, t: NOW + 1000 }] });
     expect(target()).toBe(200);
   });

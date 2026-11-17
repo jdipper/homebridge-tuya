@@ -32,6 +32,16 @@ export interface TuyaPlatformServiceInformationConfig {
   configuredName?: string;
 }
 
+export interface FastWarmProgrammeWriteConfig {
+  deviceId: string;
+  mode: 'whole-days' | 'grouped-events' | 'grouped-days';
+}
+
+export interface FastWarmProgrammeGroupConfig {
+  groupId: string;
+  deviceIds: string[];
+}
+
 export interface TuyaPlatformCustomConfigOptions {
   projectType: '1';
   endpoint: string;
@@ -46,6 +56,10 @@ export interface TuyaPlatformCustomConfigOptions {
   debug?: boolean;
   debugLevel?: string;
   forceIPv4: boolean;
+  /** Explicit per-device hardware validation; absent devices retain single-event uploads. */
+  fastWarmProgrammeWriteModes?: FastWarmProgrammeWriteConfig[];
+  /** Exact existing groups whose programme writes and restoration have been verified on every member. */
+  fastWarmProgrammeGroups?: FastWarmProgrammeGroupConfig[];
 }
 
 export interface TuyaPlatformHomeConfigOptions {
@@ -65,6 +79,10 @@ export interface TuyaPlatformHomeConfigOptions {
   debug?: boolean;
   debugLevel?: string;
   forceIPv4: boolean;
+  /** Explicit per-device hardware validation; absent devices retain single-event uploads. */
+  fastWarmProgrammeWriteModes?: FastWarmProgrammeWriteConfig[];
+  /** Exact existing groups whose programme writes and restoration have been verified on every member. */
+  fastWarmProgrammeGroups?: FastWarmProgrammeGroupConfig[];
 }
 
 export interface RTSPCameraConfig {

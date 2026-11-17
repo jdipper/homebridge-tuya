@@ -12,6 +12,7 @@ import { version } from '../../package.json';
 
 import { ExLogger, logger, PrefixLogger } from '../util/Logger';
 import { redactSensitive, redactSensitiveText } from '../util/util';
+import { classifyTuyaRequest, TuyaRequestUsage } from '../util/TuyaApiUsage';
 
 enum Endpoints {
   AMERICA = 'https://openapi.tuyaus.com',
@@ -102,6 +103,9 @@ export default class TuyaOpenAPI {
   public loginInfo: { countryCode: number; username: string; password: string; appSchema: string } | null;
   public tokenRecoveryCount: number;
   private log: ExLogger;
+  private tokenRefresh?: Promise<void>;
+  private usageMeter?: TuyaRequestUsage;
+  private usageMeterWarning = false;
 
   constructor(
     public endpoint: Endpoints | string,
@@ -144,19 +148,36 @@ export default class TuyaOpenAPI {
     return false;
   }
 
+  /** Optional diagnostic meter; it receives fixed categories, never request data. */
+  setUsageMeter(meter: TuyaRequestUsage): void {
+    this.usageMeter = meter;
+    this.usageMeterWarning = false;
+  }
+
   async _refreshAccessTokenIfNeed(path: string) {
-    if (!this.isLogin()) {
+    // Authentication calls must not await their own refresh/re-login operation.
+    if (this.isTokenManagementAPI(path) || path === '/v1.0/iot-01/associated-users/actions/authorized-login'
+      || path === '/v1.0/iot-03/users/login') {
       return;
     }
-
-    if (!this.isTokenExpired()) {
+    if (this.tokenRefresh) {
+      return this.tokenRefresh;
+    }
+    if (!this.isLogin() || !this.isTokenExpired()) {
       return;
     }
-
-    if (this.isTokenManagementAPI(path)) {
-      return;
+    const operation = this.refreshAccessToken();
+    this.tokenRefresh = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.tokenRefresh === operation) {
+        this.tokenRefresh = undefined;
+      }
     }
+  }
 
+  private async refreshAccessToken(): Promise<void> {
     this.log.debug('Refreshing access_token');
     const refreshStart = Date.now();
     const res = await this.get(`/v1.0/token/${this.tokenInfo.refresh_token}`);
@@ -378,6 +399,15 @@ export default class TuyaOpenAPI {
         resolve(cancelledRequest());
         return;
       }
+      try {
+        this.usageMeter?.record(classifyTuyaRequest(method, path, params, body));
+      } catch {
+        // Diagnostic persistence must never prevent a heating command.
+        if (!this.usageMeterWarning) {
+          this.usageMeterWarning = true;
+          this.log.warn('Tuya API usage accounting is unavailable; requests will continue.');
+        }
+      }
       const req = https.request(requestOptions, res => {
         res.setEncoding('utf8');
         let rawData = '';
@@ -447,12 +477,13 @@ export default class TuyaOpenAPI {
   }
 
   /** Single-attempt mutation with a deadline; callers must verify an uncertain result instead of retrying. */
-  async postOnce(path: string, body?, options: { timeoutMs?: number } = {}) {
+  async postOnce(path: string, body?, options: { timeoutMs?: number; shouldProceed?: () => boolean } = {}) {
     const timeoutMs = options.timeoutMs ?? 15000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
       throw new Error('Tuya single-attempt timeout must be a positive integer.');
     }
-    return this.request('post', path, null, body, { attempts: 1, timeoutMs });
+    return this.request('post', path, null, body, { attempts: 1, timeoutMs,
+      ...(options.shouldProceed === undefined ? {} : { shouldProceed: options.shouldProceed }) });
   }
 
   async delete(path: string, params?) {

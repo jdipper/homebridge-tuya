@@ -15,10 +15,10 @@ import BaseAccessory from './accessory/BaseAccessory';
 import { sanitizeName } from './util/util';
 import TuyaOpenAPI, { LOGIN_ERROR_MESSAGES } from './core/TuyaOpenAPI';
 import { initLogger } from './util/Logger';
-import ThermostatRuntime from './device/schedule/ThermostatRuntime';
-import ThermostatProfileAccessory, { configureThermostatProfileAccessories } from './accessory/ThermostatProfileAccessory';
+import TuyaProgrammeProvider from './device/schedule/TuyaProgrammeProvider';
 import { isFastWarmThermostat } from './device/profile/FastWarmThermostat';
 import { writeDeviceCache } from './util/DeviceCache';
+import { TuyaApiUsageMeter } from './util/TuyaApiUsage';
 
 
 /**
@@ -37,9 +37,9 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
   public deviceManager?: TuyaDeviceManager;
   public accessoryHandlers: BaseAccessory[];
-  public thermostatRuntime?: ThermostatRuntime;
-  private thermostatProfileAccessories: ThermostatProfileAccessory[] = [];
-  private thermostatProfileControllers: PlatformAccessory[] = [];
+  public programmeProvider?: TuyaProgrammeProvider;
+  private legacyProgrammeControls: PlatformAccessory[] = [];
+  private apiUsageMeter?: TuyaApiUsageMeter;
 
   validate() {
     let result;
@@ -143,8 +143,9 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       await this.initDevices();
     });
     this.api.on('shutdown', () => {
-      void this.thermostatRuntime?.close().catch(error => this.log.warn('Thermostat runtime shutdown: %s', String(error)));
+      void this.programmeProvider?.close().catch(() => this.log.warn('FastWarm programme provider shutdown did not complete.'));
       this.deviceManager?.mq.stop();
+      void this.apiUsageMeter?.flush().catch(() => this.log.warn('Tuya API usage tracking could not finish saving.'));
     });
   }
 
@@ -220,7 +221,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
         this.addAccessory(device);
       });
 
-    await this.initThermostatRuntime();
+    await this.initProgrammeProvider();
 
     // remove unused accessories
     for (const cachedAccessory of this.cachedAccessories) {
@@ -236,48 +237,52 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
   }
 
-  private async initThermostatRuntime() {
-    const manager = this.deviceManager;
-    const instanceId = ThermostatRuntime.instanceId({
+  private programmeInstanceId(): string {
+    return TuyaProgrammeProvider.instanceId({
       projectType: this.options.projectType, endpoint: this.options.endpoint, accessId: this.options.accessId,
       username: this.options.username, bridge: this.config._bridge?.username ?? this.config.name,
     });
+  }
+
+  private async attachUsageMeter(api: TuyaOpenAPI): Promise<void> {
+    try {
+      this.apiUsageMeter ??= await TuyaApiUsageMeter.open(this.api.user.persistPath(), this.programmeInstanceId(),
+        () => this.log.warn('Tuya API usage tracking could not be saved. Heating continues.'));
+      api.setUsageMeter(this.apiUsageMeter);
+    } catch {
+      this.log.warn('Tuya API usage tracking is unavailable. Heating continues.');
+    }
+  }
+
+  private async initProgrammeProvider() {
+    const manager = this.deviceManager;
+    const instanceId = this.programmeInstanceId();
     const homeUuid = this.api.hap.uuid.generate(`${THERMOSTAT_PROFILE_UUID_NAMESPACE}:thermostat-profiles:${instanceId}`);
     const holidayUuid = this.api.hap.uuid.generate(`${THERMOSTAT_PROFILE_UUID_NAMESPACE}:thermostat-profiles:${instanceId}:holiday`);
-    const known = [...this.thermostatProfileControllers, ...this.cachedAccessories];
-    const cachedHome = known.find(accessory => accessory.UUID === homeUuid);
-    const cachedHoliday = known.find(accessory => accessory.UUID === holidayUuid);
-    // Claim both controllers before any runtime failure or incomplete discovery can reach the unused-cache sweep.
+    const known = [...this.legacyProgrammeControls, ...this.cachedAccessories];
+    this.legacyProgrammeControls = known.filter(accessory => accessory.UUID === homeUuid || accessory.UUID === holidayUuid);
+    // A failed start must not let the generic unused-cache sweep retire the former controls.
     this.cachedAccessories = this.cachedAccessories.filter(accessory => accessory.UUID !== homeUuid && accessory.UUID !== holidayUuid);
-    this.thermostatProfileControllers = [cachedHome, cachedHoliday].filter((accessory): accessory is PlatformAccessory => !!accessory);
-    if (this.thermostatRuntime || !manager?.devices.some(isFastWarmThermostat)) {
+    if (this.programmeProvider || !manager?.devices.some(isFastWarmThermostat)) {
       return;
     }
-    const runtime = new ThermostatRuntime(manager, this.api.user.persistPath(), instanceId, this.log);
+    const provider = new TuyaProgrammeProvider(manager, this.api.user.persistPath(), instanceId, undefined, {
+      programmeWriteModes: this.options.fastWarmProgrammeWriteModes,
+      programmeGroups: this.options.fastWarmProgrammeGroups,
+    });
     try {
-      await runtime.start();
-      const home = cachedHome ?? new this.api.platformAccessory('Heating Home', homeUuid);
-      const holiday = cachedHoliday ?? new this.api.platformAccessory('Heating Holiday', holidayUuid);
-      const configured = configureThermostatProfileAccessories(this, runtime, home, holiday, () => {
-        for (const [accessory, cached] of [[home, cachedHome], [holiday, cachedHoliday]] as const) {
-          if (cached) {
-            this.api.updatePlatformAccessories([accessory]);
-          } else {
-            this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-            this.thermostatProfileControllers.push(accessory);
-          }
-        }
-      });
-      this.thermostatProfileAccessories = configured.bindings;
-      this.thermostatRuntime = runtime;
-      if (configured.error) {
-        this.log.warn('Programme control publication incomplete; retry after restart: %s', configured.error.message);
+      await provider.start();
+      this.programmeProvider = provider;
+      // Household controls are now published by the shared controller, never by this plugin.
+      if (this.legacyProgrammeControls.length) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, this.legacyProgrammeControls);
+        this.legacyProgrammeControls = [];
       }
-    } catch (error) {
-      this.thermostatProfileAccessories.forEach(binding => binding.dispose());
-      this.thermostatProfileAccessories = [];
-      await runtime.close();
-      this.log.warn('Thermostat programme controls unavailable: %s', String(error));
+    } catch {
+      if (!this.programmeProvider) {
+        await provider.close();
+      }
+      this.log.warn('FastWarm programme connection unavailable. Check the shared heating controller and restart.');
     }
   }
 
@@ -335,6 +340,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     const { endpoint, accessId, accessKey, debug, debugLevel } = this.options;
     const debugMode = debug && ((debugLevel ?? '').length > 0 ? debugLevel?.includes('api') : true);
     const api = new TuyaOpenAPI(endpoint, accessId, accessKey, 'en', debugMode, this.options.forceIPv4);
+    await this.attachUsageMeter(api);
     const deviceManager = new TuyaCustomDeviceManager(api, debugMode);
 
     this.log.info('Get token.');
@@ -430,6 +436,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       'en',
       debugMode,
       this.options.forceIPv4);
+    await this.attachUsageMeter(api);
     const deviceManager = new TuyaHomeDeviceManager(api, debugMode);
 
     this.log.info('Log in to Tuya Cloud.');

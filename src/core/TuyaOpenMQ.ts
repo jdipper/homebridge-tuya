@@ -25,6 +25,13 @@ interface TuyaMQTTConfig {
 type TuyaMQTTCallback = (topic: string, protocol: number, data) => void;
 type TuyaRawMQTTCallback = (topic: string, protocol: number, data, timestamp: number) => void;
 
+export interface TuyaMQConnectionEvent {
+  connected: boolean;
+  /** A short, planned credential rotation does not lose the established device cache. */
+  recoveryRequired: boolean;
+}
+type TuyaMQConnectionCallback = (event: TuyaMQConnectionEvent) => void;
+
 export default class TuyaOpenMQ {
 
   public client?: mqtt.MqttClient;
@@ -32,6 +39,9 @@ export default class TuyaOpenMQ {
   public version: string;
   public messageListeners: Set<TuyaMQTTCallback>;
   private rawMessageListeners: Set<TuyaRawMQTTCallback>;
+  private connectionListeners = new Set<TuyaMQConnectionCallback>();
+  private disconnectedAt?: number;
+  private unexpectedDisconnect = false;
   public linkId: string;
 
   public timer?: NodeJS.Timeout;
@@ -51,21 +61,37 @@ export default class TuyaOpenMQ {
   }
 
   start() {
-    this._connect();
+    void this._connect(this.client?.connected === true);
   }
 
-  stop() {
+  isConnected(): boolean {
+    return this.client?.connected === true;
+  }
+
+  addConnectionListener(listener: TuyaMQConnectionCallback): void {
+    this.connectionListeners.add(listener);
+  }
+
+  removeConnectionListener(listener: TuyaMQConnectionCallback): void {
+    this.connectionListeners.delete(listener);
+  }
+
+  stop(plannedRotation = false) {
     if (this.timer) {
       clearTimeout(this.timer);
     }
     if (this.client) {
+      if (this.client.connected || this.disconnectedAt !== undefined) {
+        this.disconnectedAt ??= Date.now();
+        this.unexpectedDisconnect ||= !plannedRotation;
+      }
       this.client.removeAllListeners();
       this.client.end();
     }
   }
 
-  async _connect() {
-    this.stop();
+  async _connect(plannedRotation = false) {
+    this.stop(plannedRotation);
 
     const res = await this._getMQConfig('mqtt');
     if (res.success === false) {
@@ -92,6 +118,7 @@ export default class TuyaOpenMQ {
     client.on('connect', this._onConnect.bind(this));
     client.on('error', this._onError.bind(this));
     client.on('end', this._onEnd.bind(this));
+    client.on('close', () => this._onDisconnect(client));
     client.on('message', this._onMessage.bind(this));
     client.subscribe(source_topic.device);
 
@@ -99,7 +126,9 @@ export default class TuyaOpenMQ {
     this.config = res.result;
 
     // reconnect every 2 hours required
-    this.timer = setTimeout(this._connect.bind(this), (expire_time - 60) * 1000);
+    this.timer = setTimeout(() => {
+      void this._connect(true);
+    }, (expire_time - 60) * 1000);
 
   }
 
@@ -116,6 +145,30 @@ export default class TuyaOpenMQ {
 
   _onConnect() {
     this.log.debug('Connected');
+    const recoveryRequired = this.unexpectedDisconnect
+      || (this.disconnectedAt !== undefined && Date.now() - this.disconnectedAt > 30_000);
+    this.disconnectedAt = undefined;
+    this.unexpectedDisconnect = false;
+    this.notifyConnection({ connected: true, recoveryRequired });
+  }
+
+  private _onDisconnect(client: mqtt.MqttClient) {
+    if (client !== this.client) {
+      return;
+    }
+    this.disconnectedAt ??= Date.now();
+    this.unexpectedDisconnect = true;
+    this.notifyConnection({ connected: false, recoveryRequired: false });
+  }
+
+  private notifyConnection(event: TuyaMQConnectionEvent) {
+    for (const listener of this.connectionListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        this.log.warn('MQTT connection listener failed: %s', String(error));
+      }
+    }
   }
 
   _onError(error: Error) {

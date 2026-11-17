@@ -437,6 +437,60 @@
                         "title": "Forcing IPv4 connection",
                         "type": "boolean",
                         "default": false
+                    },
+                    "fastWarmProgrammeGroups": {
+                        "title": "Validated FastWarm thermostat groups",
+                        "type": "array",
+                        "description": "Opt in only after a changed programme and exact restoration have been individually verified on all six members of an existing Tuya group. Automatic programme operations can share inquiries and identical writes; every room is still verified separately.",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["groupId", "deviceIds"],
+                            "properties": {
+                                "groupId": {
+                                    "title": "Existing Tuya group ID",
+                                    "type": "string",
+                                    "pattern": "^[1-9][0-9]{0,29}$"
+                                },
+                                "deviceIds": {
+                                    "title": "Exactly six verified thermostat IDs",
+                                    "type": "array",
+                                    "minItems": 6,
+                                    "maxItems": 6,
+                                    "uniqueItems": true,
+                                    "items": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"}
+                                }
+                            }
+                        }
+                    },
+                    "fastWarmProgrammeWriteModes": {
+                        "title": "Validated FastWarm programme upload modes",
+                        "type": "array",
+                        "description": "Leave empty unless the selected packet shape has been verified by a full changed-week and restored-week hardware test on each listed thermostat. Other thermostats retain single-event uploads.",
+                        "items": {
+                            "type": "object",
+                            "required": [
+                                "deviceId",
+                                "mode"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                                "deviceId": {
+                                    "type": "string",
+                                    "title": "Thermostat device ID",
+                                    "pattern": "^[A-Za-z0-9_-]{1,128}$"
+                                },
+                                "mode": {
+                                    "type": "string",
+                                    "title": "Validated packet shape",
+                                    "enum": [
+                                        "whole-days",
+                                        "grouped-events",
+                                        "grouped-days"
+                                    ]
+                                }
+                            }
+                        }
                     }
                 }
             },

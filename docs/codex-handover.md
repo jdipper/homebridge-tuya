@@ -8,19 +8,26 @@ Household heating is already split into device providers and a shared scheduler.
 Do not repeat the old combined-plugin extraction or install its runtime beside
 the shared owner.
 
-| Component | Source | Prepared build | Last verified installed build, 12 November |
-| --- | --- | --- | --- |
-| Heating Programmes | `jdipper/homebridge-heating-programmes`, `fix/shared-holiday-transitions` | `0.1.0-jdipper.8` | `0.1.0-jdipper.7` |
-| Tuya device provider | `jdipper/homebridge-tuya`, `fix/shared-holiday-transitions` | `2.7.3-jdipper.7` | `2.7.3-jdipper.6` |
-| Hive device provider | `@jdipper/homebridge-hivehome-control` | unchanged | `1.1.0-jdipper.4` |
+| Component | Source | Last verified installed build, 17 November |
+| --- | --- | --- |
+| Heating Programmes | `jdipper/homebridge-heating-programmes`, `main` | `0.1.0-jdipper.8` |
+| Tuya device provider | `jdipper/homebridge-tuya`, `main` | `2.7.3-jdipper.7` |
+| Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (unchanged) |
+
+The paired updates were merged before installation:
+
+- [Shared PR #1](https://github.com/jdipper/homebridge-heating-programmes/pull/1),
+  merge `e44e043ac80a63f901591df448b638540933a897`.
+- [Tuya PR #2](https://github.com/jdipper/homebridge-tuya/pull/2),
+  merge `649edd377e03ae0e55d2a50e569dbad71697a24e`.
 
 Implementation checkpoints before this handover:
 - Shared: `f8dab72c2a9afc18073701c6414a29e4b3f4ee39`.
 - Tuya: `aeb9ed78e9a3f4cf2bb9667af4ec98b26dfe713e`.
 
 The public Shared repository has a clean history: the previously verified `.7`
-source snapshot on `main`, followed by this port on its feature branch. Private
-workspace history, runtime files and installation receipts are not published.
+source snapshot followed by this port, now merged into `main`. Private workspace
+history, runtime files and installation receipts are not published.
 Public commit authors use the GitHub handle and noreply address.
 
 In the existing workspace, the publishable Git checkouts are
@@ -34,10 +41,20 @@ The original Holiday work remains available in
 `ec4d73eeb54f646fec117124aa60976ddc02c82c`. That is an older combined-plugin
 implementation and a reference for the fixes, not the deployment baseline.
 
-This port has not been published to npm or installed on Homebridge. No live
-thermostat commands, schedule reads, network isolation or timer tests were issued
-for this port. The installed-build column records the last verified installation;
-it is not a fresh observation of today's live system.
+The paired builds were installed from checked local package archives and passed
+read-only verification at **17 November 2026, 13:43:22 UTC**. They have not been
+published to npm. Settings, saved profiles, history and pairing data were backed
+up before installation. Only the Tuya and Heating Programmes child bridges were
+restarted; the Hive bridge was preserved.
+
+Verification confirmed the running versions, preserved configuration and policy,
+historical native weeks and profiles, grouped control identity/names and provider
+pairings. Heating write counters were unchanged. The installer and verifier sent
+no thermostat writes and initiated no vendor probes; normal provider startup
+traffic is separate from those checks. Four pre-existing programme warnings were
+retained. Six FastWarm current-week snapshots await a fresh read after restart;
+immutable historical versions remain preserved. No live programme-switch test,
+network-isolation test or timer test was performed for this deployment.
 
 ## Existing architecture and ownership
 
@@ -56,7 +73,7 @@ it is not a fresh observation of today's live system.
   profile files are read only for the existing one-time migration, not re-imported
   to replace newer shared settings.
 
-The paired candidate builds preserve one **Heating** accessory, UUID seed
+The installed paired builds preserve one **Heating** accessory, UUID seed
 `@jdipper/homebridge-heating-programmes:controls`, with ordinary Switch services
 using stable `home` and `holiday` subtypes. Configured names are Heating Home and
 Heating Holiday; custom names and the grouped accessory identity are retained.
@@ -109,7 +126,7 @@ Cancellation is local IPC, not another Tuya cloud connection or command.
 Shared `.8` remains compatible with the earlier `.6` device provider by allowing
 the already submitted apply operation to finish before preparing the latest
 selection. That provider does not advertise or promise per-command cancellation.
-Use the paired `.7` candidate to obtain that stronger behaviour. Hive's single
+Use the paired `.7` provider to obtain that stronger behaviour. Hive's single
 whole-week command is allowed to finish once submitted; an obsolete unsent
 preview is consumed/discarded locally without another cloud read or upload.
 
@@ -172,7 +189,7 @@ tuya-local exact-product report and TinyTuya/TuyAPI documentation in the origina
 handover justify investigation, not a compatibility claim. No LAN provider has
 been added and no automatic cloud fallback is introduced.
 
-## Validation and next deployment
+## Validation and deployment safeguards
 
 - Shared: `npm test` builds the plugin and passes all **268** offline tests,
   including the Unix-socket transport, editor relay and owner-lock suites.
@@ -197,9 +214,9 @@ been added and no automatic cloud fallback is introduced.
   are excluded from the public snapshots. The public source trees match the
   tested implementation trees exactly before these documentation-only commits.
 
-Before any installation, back up saved profiles, history, enrollment, shared
+For any future installation, back up saved profiles, history, enrollment, shared
 policy, root configuration and child-bridge pairing/accessory caches. Keep the
-paired candidate versions together when checking command cancellation. Preserve
+paired versions together when checking command cancellation. Preserve
 the existing grouped accessory/child bridge identities and provider configuration.
 
 Shared policy remains schema version 1 but `.8` omits `awayDelayMinutes` and
@@ -208,7 +225,7 @@ pre-upgrade `HeatingProgrammes.json` backup because `.7` requires those fields.
 No rollback should invent a countdown, replay an interrupted upload or overwrite
 a newer programme without review.
 
-After installation, first verify read-only startup and both providers/controls.
-Any live programme-switch test needs fresh baseline evidence and a specific
+Read-only startup and both providers/controls were verified for this installation.
+Any live programme-switch test still needs fresh baseline evidence and a specific
 controlled plan. Do not infer hardware correctness from the offline suite or an
 HTTP acknowledgement. Unknown writes require review; no automatic replay.

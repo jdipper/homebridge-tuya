@@ -16,8 +16,9 @@ read. No Hold/Smart cycle, native Holiday, power command, temporary job or cloud
 schedule executor is introduced.
 
 The existing control reads also request `SetTemp`, adding no query. A differing
-target normally adds one individual command and one confirmation read. A short
-post-acknowledgement wait avoids immediately rereading the old value; at most
+target normally adds one individual command and one confirmation read. The `.10` provider waits up to ten seconds for an accepted native target report,
+then checks the shadow after a short settling interval. A report that already
+arrived avoids that long wait. At most
 three read-only confirmation attempts are permitted. A nearby period boundary
 can cause one bounded wait/read before any target command. Native programme
 packet grouping and its one-second processing interval remain unchanged;
@@ -48,6 +49,8 @@ hand-back on the tested thermostat. It does not establish WAN-independent
 operation, every firmware, clock retention or a guarantee for an ambiguous DST
 period. Complete-week and fresh target proof remain required.
 
-The initial hardware probe validates the mechanism. The new paired build still
-requires its own installed Holiday/Home round-trip check; consult the handover
-for the current deployment result.
+The first paired `.9` round trip adopted Holiday targets on all six devices,
+but five reports arrived just after its three short confirmation reads. Those
+outcomes remained unconfirmed; no command was replayed. Home was restored and
+independently read-verified. The `.10` report-informed wait addresses that observed
+latency. Its installed Holiday/Home check is recorded in the handover.

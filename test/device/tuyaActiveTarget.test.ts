@@ -339,3 +339,82 @@ test('an explicit manual Hold resume aligns against its freshly recalled Smart t
   expect(data.calls.filter(call => call.properties?.ControlMode)).toHaveLength(1);
   expect(data.calls.filter(call => call.kind === 'target')).toEqual([{kind: 'target', properties: {SetTemp: 120}}]);
 });
+
+
+test.each([4000, 6000, 8000])('a native target report arriving %ims after ACK gets one authoritative GET without replay', async latency => {
+  const data = await fixture({ignoreTarget: true}), preview = await data.prepare();
+  let delayed = false;
+  const waits: number[] = [];
+  data.onWait(milliseconds => {
+    waits.push(milliseconds);
+    if (!delayed && data.calls.some(call => call.kind === 'target') && milliseconds >= latency) {
+      delayed = true; data.advance(latency - milliseconds); data.emitTarget(120);
+    }
+  });
+  const result = (await data.call('/provider/apply-automatic', {token: preview.token})).result;
+  expect(result).toMatchObject({status: 'confirmed', readback: {targetC: 12}});
+  expect(waits).toContain(10000);
+  expect(data.calls.filter(call => call.kind === 'target')).toHaveLength(1);
+  expect(data.calls.filter(call => call.kind === 'controls')).toHaveLength(3);
+});
+
+test('an already accepted post-submit native target hint uses a short settling delay', async () => {
+  const data = await fixture({mqttTargetBeforeShadow: true}), preview = await data.prepare();
+  const waits: number[] = []; data.onWait(milliseconds => waits.push(milliseconds));
+  expect((await data.call('/provider/apply-automatic', {token: preview.token})).result.status).toBe('confirmed');
+  expect(waits).toContain(250); expect(waits).not.toContain(10000);
+  expect(data.calls.filter(call => call.kind === 'target')).toHaveLength(1);
+});
+
+test('a stale accepted hint from before submission does not shorten the local device wait', async () => {
+  const data = await fixture(); data.emitTarget(120); data.advance(5000);
+  const waits: number[] = []; data.onWait(milliseconds => waits.push(milliseconds));
+  await (data.provider as any).waitForTargetHint(data.device.id, 12, Date.now());
+  expect(waits).toEqual([10000]);
+});
+
+test.each(['cancellation', 'offline', 'close'])('%s wakes the real target-hint wait without a heating command', async action => {
+  const data = await fixture(), preview = await data.prepare();
+  (data.provider as any).targetWait.mockRestore();
+  const waiting = (data.provider as any).waitForTargetHint(data.device.id, 12, Date.now());
+  await new Promise(resolve => setImmediate(resolve));
+  if (action === 'cancellation') await data.call('/provider/cancel-automatic', {token: preview.token});
+  if (action === 'offline') data.availability(false);
+  if (action === 'close') await data.provider.close();
+  const result = await Promise.race([waiting.then(() => 'woken'), new Promise(resolve => setTimeout(() => resolve('not-woken'), 200))]);
+  expect(result).toBe('woken');
+  expect(data.calls.some(call => call.kind === 'target' || call.kind === 'programme')).toBe(false);
+});
+
+
+test.each([false, true])('a newer manual target accepted before a stale GET is preserved (missing shadow source: %s)', async missingSource => {
+  const data = await fixture(), preview = await data.prepare();
+  const originalRead = data.api.request.getMockImplementation()!, originalPost = data.api.postOnce.getMockImplementation()!;
+  let baseline: any, reads = 0, injected = false;
+  data.api.request.mockImplementation(async (...args: any[]) => {
+    if (++reads === 1) {baseline = await originalRead(...args); return baseline;}
+    const stale = structuredClone(baseline);
+    if (missingSource) delete stale.result.properties.find((property: any) => property.code === 'SetTemp').time;
+    return stale;
+  });
+  data.api.postOnce.mockImplementation(async (...args: any[]) => {
+    const result = await originalPost(...args);
+    if (!injected && JSON.parse(args[1].properties).week_program) {injected = true; data.emitTarget(195);}
+    return result;
+  });
+  const result = (await data.call('/provider/apply-automatic', {token: preview.token})).result;
+  expect(result.status).not.toBe('confirmed');
+  expect(data.calls.filter(call => call.kind === 'target')).toHaveLength(0);
+  expect(data.nativeTarget()).toBe(195);
+});
+
+test('matching accepted native and shadow target values permit fresh proof with coarse source timestamps', async () => {
+  const data = await fixture({target: 120}); data.emitTarget(120);
+  const original = data.api.request.getMockImplementation()!;
+  data.api.request.mockImplementation(async (...args: any[]) => {
+    const reply = await original(...args); reply.result.properties.find((property: any) => property.code === 'SetTemp').time -= 1000;
+    return reply;
+  });
+  expect((await data.call('/provider/read', {deviceId: data.device.id})).zone)
+    .toMatchObject({targetC: 12, targetReadAt: expect.any(Number)});
+});

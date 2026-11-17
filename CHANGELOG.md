@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.7.3-jdipper.10] - (2026.11.17)
+
+### Fixed
+- Wait for accepted native target reports before checking the cloud shadow, accommodating observed delivery delays without replaying target commands or increasing the bounded number of read-only checks.
+- Prevent a stale shadow value from superseding a newer accepted target report received before the read began.
+
 ## [2.7.3-jdipper.9] - (2026.11.17)
 
 ### Fixed

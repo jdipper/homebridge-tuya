@@ -7,7 +7,7 @@ heating controller, and security fixes.
 
 ## Shared heating controller
 
-The local `2.7.3-jdipper.9` build separates device integration from household
+The local `2.7.3-jdipper.10` build separates device integration from household
 control. **Heating Programmes** owns the programme editor, saved Home/Away/Holiday
 drafts, household presence, Holiday return, history and the Apple Home switches.
 This Tuya plugin owns Tuya authentication, normal HomeKit accessories, accepted
@@ -63,7 +63,7 @@ saved draft. Applying that one-shot reservation saves the complete baseline in a
 private operation journal, reads fresh controls, sends the changed periods, then
 verifies the complete resulting week and controls. A changed programme costs
 **four cloud checks plus one request per planned upload packet**; a matching week
-needs two checks and no programme write. Native target data shares the existing control reads. A differing active target additionally needs one individual target command and normally one verification read; delayed reports allow bounded read-only rechecks. No target command is sent when it already matches. Manual review/apply retains its independent fresh
+needs two checks and no programme write. Native target data shares the existing control reads. A differing active target additionally needs one individual target command and normally one verification read. Accepted device reports wake a bounded wait before that read, allowing slow delivery without replaying commands; delayed shadows permit bounded read-only rechecks. No target command is sent when it already matches. Manual review/apply retains its independent fresh
 baseline checks. Expired reservations, disconnects or observed external programme
 edits stop before uploading. Verification may repeat a read; uncertain programme
 writes are never retried automatically.

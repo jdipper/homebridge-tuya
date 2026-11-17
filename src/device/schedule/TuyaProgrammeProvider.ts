@@ -113,6 +113,7 @@ export default class TuyaProgrammeProvider {
   private readonly controlRevisions = new Map<string, number>();
   private readonly programmeRevisions = new Map<string, number>();
   private readonly targetWaits = new Map<string, () => void>();
+  private readonly targetHints = new Map<string, {targetC: number; receivedAt: number; sourceAt?: number}>();
   private automaticLeases = new Map<string, AutomaticLease>();
   private readonly automaticJournalPath: string;
 
@@ -372,6 +373,11 @@ export default class TuyaProgrammeProvider {
     const targetProperty = Array.isArray(properties) ? properties.find(item => item.code === 'SetTemp') : undefined;
     const target = getFastWarmSetTemperatureReport(targetProperty);
     const receivedAt = Date.now();
+    const hint = this.targetHints.get(id);
+    if (target && hint && target.value / 10 !== hint.targetC
+      && (target.time === undefined || target.time <= (hint.sourceAt ?? hint.receivedAt))) {
+      throw new NativeSettingsChanged('The native shadow target predates a different accepted thermostat target report.');
+    }
     const validTarget = target && (target.time === undefined || target.time <= receivedAt + 5000);
     const settings: NativeSettings = { mode, grouping, ...(validTarget
       ? {targetC: target.value / 10, targetReadAt: receivedAt, targetReportedAt: target.time} : {}) };
@@ -393,6 +399,23 @@ export default class TuyaProgrammeProvider {
       const timer = setTimeout(finish, Math.max(1, milliseconds));
       this.targetWaits.set(id, finish);
     });
+  }
+
+  /** MQTT is a wake-up hint only; the subsequent native shadow GET remains the proof. */
+  private async waitForTargetHint(id: string, targetC: number, submittedAt: number): Promise<void> {
+    const received = () => {
+      const hint = this.targetHints.get(id);
+      return Boolean(hint && hint.targetC === targetC && hint.receivedAt >= submittedAt
+        && (hint.sourceAt === undefined || hint.sourceAt >= submittedAt - 1000));
+    };
+    if (!received()) {
+      // Real ET-63 reports arrived 4–8 seconds after accepted programme/target
+      // commands. Waiting locally avoids exhausting three predictably stale GETs.
+      await this.targetWait(id, 10000);
+    }
+    if (received() && !this.closed) {
+      await this.targetWait(id, 250);
+    }
   }
 
   private onConnection = () => {
@@ -541,6 +564,7 @@ export default class TuyaProgrammeProvider {
         return allowed;
       };
       writeAttempted = true;
+      const targetSubmittedAt = Date.now();
       const response = await this.manager.api.postOnce(`/v2.0/cloud/thing/${id}/shadow/properties/issue`, {
         properties: JSON.stringify({SetTemp: Math.round(period.targetC * 10)}),
       }, {timeoutMs: 10000, shouldProceed});
@@ -554,9 +578,11 @@ export default class TuyaProgrammeProvider {
       // A successful HTTP reply is not proof that the device adopted the target.
       // Recheck only the read side when the shadow still shows its baseline.
       for (let attempt = 0; attempt < 3; attempt++) {
-        // Give device application/MQTT time to converge before the first GET,
-        // avoiding a predictably stale immediate read and an unnecessary query.
-        await this.targetWait(id, 1000);
+        if (attempt === 0) {
+          await this.waitForTargetHint(id, period.targetC, targetSubmittedAt);
+        } else {
+          await this.targetWait(id, 1000);
+        }
         let after: NativeSettings;
         try {
           after = await this.readSettings(id);
@@ -924,12 +950,19 @@ export default class TuyaProgrammeProvider {
   };
 
   private onDeviceStatus = (device: TuyaDevice, statuses: TuyaDeviceStatus[]) => {
-    if (!Array.isArray(statuses)) {
+    if (!Array.isArray(statuses) || !isFastWarmThermostat(device) || !this.devices().some(item => item.id === device.id)) {
       return;
     }
     const target = statuses.find(item => item.code === 'temp_set');
     const report = target && getFastWarmSetTemperatureReport({ ...target, code: 'SetTemp' });
     if (report) {
+      const receivedAt = Date.now();
+      const previousHint = this.targetHints.get(device.id);
+      if ((report.time === undefined || report.time <= receivedAt + 5000)
+        && (previousHint?.sourceAt === undefined || report.time === undefined || report.time >= previousHint.sourceAt)) {
+        this.targetHints.set(device.id, {targetC: report.value / 10, receivedAt, sourceAt: report.time});
+        this.targetWaits.get(device.id)?.();
+      }
       this.targetRevisions.set(device.id, (this.targetRevisions.get(device.id) ?? 0) + 1);
       const settings = this.settings.get(device.id);
       if (settings?.targetReadAt && report.value / 10 !== settings.targetC

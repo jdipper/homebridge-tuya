@@ -1,6 +1,6 @@
 # Codex handover: shared Heating Programmes
 
-Updated: 17 November 2026.
+Updated: 18 November 2026.
 
 ## Repositories, checkpoints and deployment state
 
@@ -8,11 +8,11 @@ Household heating is already split into device providers and a shared scheduler.
 Do not repeat the old combined-plugin extraction or install its runtime beside
 the shared owner.
 
-| Component | Source | Last verified installed build, 17 November |
+| Component | Source | Last verified installed build |
 | --- | --- | --- |
-| Heating Programmes | `jdipper/homebridge-heating-programmes` ([PR #2](https://github.com/jdipper/homebridge-heating-programmes/pull/2)) | `0.1.0-jdipper.9` |
-| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.12` |
-| Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (unchanged) |
+| Heating Programmes | `jdipper/homebridge-heating-programmes` ([PR #2](https://github.com/jdipper/homebridge-heating-programmes/pull/2)) | `0.1.0-jdipper.9` (17 November; unchanged) |
+| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.12` (18 November) |
+| Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (17 November; unchanged) |
 
 The earlier household-transition updates were merged before their installation:
 
@@ -47,12 +47,13 @@ were backed up and preserved. The programme-delivery follow-up below supersedes
 that Tuya build; Heating Programmes and Hive remain unchanged. These local builds
 have not been published to npm.
 
-## FastWarm LAN pilot (installed `.12`)
+## FastWarm LAN control (installed `.12`)
 
 `feat/fastwarm-lan-control` adds an optional transport inside the existing Tuya
-provider. The initial rollout is restricted to one thermostat. Other FastWarm
-thermostats and Hive retain their existing connections; shared controller code,
-programme policy and grouped Home/Holiday controls are unchanged.
+provider. The initial pilot selected one thermostat; the configuration-only
+rollout on 18 November selected all six FastWarm thermostats. Hive retains its
+existing connection. Shared controller code, programme policy and grouped
+Home/Holiday controls are unchanged.
 
 The `.11` pilot was installed from checked archive SHA-256
 `c5009ab72e64bf46b9433e7c1110a532efda97b5e0aa569653542b608405adc1`,
@@ -85,11 +86,39 @@ remain immutable; subsequent handover edits record deployment evidence only.
 After the `.12` restart, a new single read verified all 168 native periods and
 six fresh Home target confirmations again. Original native fingerprints, saved
 profiles, policy, programme history and grouped control identities were retained.
-The final check used one local thermostat and five cloud thermostats; its only
+That pilot check used one local thermostat and five cloud thermostats; its only
 cloud control traffic was the five semantic inquiry requests. No programme,
 target, power or mode command was sent during either installation. Home remains
 on and Holiday off. Broad multi-period LAN delivery and physical WAN-disconnect
 startup still require separate bounded hardware validation.
+
+### Six-device LAN rollout, 18 November
+
+The remaining five FastWarm thermostats passed authenticated protocol 3.5 status
+and complete native-week preflight checks against their saved Home programmes.
+The rollout retained the original local thermostat's selection and key and added
+the five verified selections and private keys. Keys remain in the owned,
+instance-scoped mode-0600 store and never enter normal configuration or public
+documentation. The installer changed no package, runtime code, metadata or
+accessory cache. The installed Tuya version remains `2.7.3-jdipper.12`.
+
+Only the Tuya child bridge was restarted. Static verification confirmed six LAN
+temperature sources and six recognised private keys, with the same provider and
+accessory identities, grouped Home/Holiday controls, saved profiles, household
+policy, retained programme history and unchanged Shared/Hive processes. A single
+subsequent read verified all **168 native periods and six fresh Home targets**
+against saved Home and the captured native fingerprints. Programme/control HTTP
+counters were unchanged: this all-LAN verification needed no cloud inquiry
+requests. No programme, target, power or mode value was written. Home remained
+on and Holiday off.
+
+The cloud request-budget examples below describe the cloud transport. Selected
+LAN devices use local status, native programme and control requests; the plugin
+still retains its existing cloud discovery and MQTT lifecycle. This rollout did
+not add a cloud-disabled startup mode or establish physical WAN-disconnection
+startup. Broad multi-period LAN delivery remains a separate bounded hardware
+test; the earlier single future-period write/restoration is its current live
+write evidence.
 
 See [local control](fastwarm-local-control.md) for configuration, key storage,
 transport ownership and validation limits. The implementation uses Node's built-in

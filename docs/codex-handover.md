@@ -11,7 +11,7 @@ the shared owner.
 | Component | Source | Last verified installed build |
 | --- | --- | --- |
 | Heating Programmes | `jdipper/homebridge-heating-programmes` ([PR #2](https://github.com/jdipper/homebridge-heating-programmes/pull/2)) | `0.1.0-jdipper.9` (17 November; unchanged) |
-| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.12` (18 November) |
+| Tuya device provider | `jdipper/homebridge-tuya` ([PR #4](https://github.com/jdipper/homebridge-tuya/pull/4)) | `2.7.3-jdipper.13` (18 November) |
 | Hive device provider | `@jdipper/homebridge-hivehome-control` | `1.1.0-jdipper.4` (17 November; unchanged) |
 
 The earlier household-transition updates were merged before their installation:
@@ -47,7 +47,7 @@ were backed up and preserved. The programme-delivery follow-up below supersedes
 that Tuya build; Heating Programmes and Hive remain unchanged. These local builds
 have not been published to npm.
 
-## FastWarm LAN control (installed `.12`)
+## FastWarm LAN control (installed `.13`)
 
 The `.13` local-only follow-up adds an explicit `fastWarmLocalOnly` option.
 With vetted metadata and private keys already present, startup bypasses cloud
@@ -63,10 +63,32 @@ See [local-only operation](fastwarm-local-control.md#explicit-local-only-mode).
 
 The full offline suite passes **879 tests in 47 suites**, including real private
 IPC startup, the cloud-denying API, unchanged mixed-mode paths and explicit
-metadata-refresh failure cases. Build and source lint pass. The deployment
-helpers additionally cover transactional rollback, six retained local selections,
-private key/metadata preservation and complete native verification. Installation
-evidence for the follow-up will be recorded after the live read-only checks.
+metadata-refresh failure cases. A subsequent focused UI run passes **29 tests**
+after adding Custom-project capability gating. Build, source lint and UI server
+lint pass. The deployment/native/connection helpers pass **68 tests**, including
+transactional rollback, six retained local selections, private key/metadata
+preservation and complete native verification.
+
+The `.13` build was installed from checked archive SHA-256
+`87dd0b5f95b8e61f0bf7d7df19f1db454abd4ab47e726b5a1d2463bb28881351`,
+built from `a713765c7f88af10d2895f047ab3b42b3fa4b9a7`. Only the Tuya child bridge
+was restarted. The configuration change enabled local-only operation while
+retaining all six local selections, private key/metadata bytes, provider identity,
+pairings, grouped controls, saved profiles, policy/history and Shared/Hive
+processes. The first static check ran before every LAN connection had completed;
+cached readiness then showed all six connected and static verification passed.
+No thermostat setting was written in either check.
+
+A single native verification then confirmed all **168 original/Home periods and
+six fresh active Home targets**. All HTTP-attempt categories remained unchanged
+across capture, installation, startup and verification. A process-owned socket
+snapshot found six established thermostat sessions and **zero public TCP
+connections**. The live UI shows local-only configuration, all six stored-key
+flags and the explicit SmartLife refresh action. That optional cloud action was
+not run during deployment. Home remains on and Holiday off. This validates the
+cloud-disabled software path and an actual restart, not a physical WAN-disconnect
+test or every firmware/multi-period LAN write pattern. The archive stays immutable;
+later handover edits record evidence only.
 
 `feat/fastwarm-lan-control` adds an optional transport inside the existing Tuya
 provider. The initial pilot selected one thermostat; the configuration-only
@@ -131,13 +153,13 @@ counters were unchanged: this all-LAN verification needed no cloud inquiry
 requests. No programme, target, power or mode value was written. Home remained
 on and Holiday off.
 
-The cloud request-budget examples below describe the cloud transport. Selected
-LAN devices use local status, native programme and control requests; the plugin
-still retains its existing cloud discovery and MQTT lifecycle. This rollout did
-not add a cloud-disabled startup mode or establish physical WAN-disconnection
-startup. Broad multi-period LAN delivery remains a separate bounded hardware
-test; the earlier single future-period write/restoration is its current live
-write evidence.
+The cloud request-budget examples below describe the cloud transport. At this
+earlier configuration-only rollout, selected LAN devices used local status,
+native programme and control requests, while cloud discovery and MQTT remained
+active. The `.13` follow-up above subsequently disabled that cloud lifecycle.
+Physical WAN-disconnection startup and broad multi-period LAN delivery remain
+separate bounded hardware tests; the earlier single future-period
+write/restoration is the current live write evidence.
 
 See [local control](fastwarm-local-control.md) for configuration, key storage,
 transport ownership and validation limits. The implementation uses Node's built-in

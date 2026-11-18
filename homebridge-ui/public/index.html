@@ -25,10 +25,12 @@
   <p class="hint">In Tuya settings, add a local device with its device ID, private IPv4 address and protocol 3.5. Then save its 16-character local device key here. Keys are stored privately on Homebridge, separately from settings.</p>
   <button id="refresh" type="button">Refresh local devices</button>
   <p id="notice" role="status" aria-live="polite"></p>
+  <div id="connections"></div>
   <div id="devices"></div>
   <script>
     const homebridge = window.homebridge;
     const devices = document.getElementById('devices');
+    const connections = document.getElementById('connections');
     const notice = document.getElementById('notice');
     document.getElementById('settings').addEventListener('click', () => homebridge.showSchemaForm());
     document.getElementById('refresh').addEventListener('click', loadDevices);
@@ -37,6 +39,47 @@
       const node = document.createElement(tag);
       if (text !== undefined) node.textContent = text;
       return node;
+    }
+
+    function connectionCard(instance) {
+      const card = element('section');
+      card.className = 'device';
+      card.appendChild(element('h3', instance.localOnly ? 'Configured for local-only mode' : 'Cloud discovery enabled'));
+      card.appendChild(element('p', instance.deviceCount + ' enabled local thermostat' + (instance.deviceCount === 1 ? '' : 's')));
+      if (!instance.localOnly) {
+        card.appendChild(element('p', 'To stop routine Tuya cloud requests, enable “Use local connections only” in Tuya settings after all thermostats and keys are configured.'));
+        return card;
+      }
+      card.appendChild(element('p', 'Restart the Tuya child bridge after changing the local-only setting, before using Refresh from SmartLife.'));
+      card.appendChild(element('p', 'Readings and controls use the LAN. Saved device information is used at startup, without cloud login or notifications.'));
+      if (!instance.cloudRefreshAvailable) {
+        card.appendChild(element('p', 'SmartLife metadata refresh is available for Home projects.'));
+        return card;
+      }
+      card.appendChild(element('p', 'Refresh from SmartLife only when you need updated device or room names. This makes cloud read requests and saves device information. It does not change heating settings.'));
+      const refresh = element('button', 'Refresh from SmartLife');
+      refresh.type = 'button';
+      refresh.disabled = instance.deviceCount < 1;
+      card.appendChild(refresh);
+      const result = element('p');
+      result.className = 'result';
+      result.setAttribute('role', 'status');
+      result.setAttribute('aria-live', 'polite');
+      card.appendChild(result);
+      refresh.addEventListener('click', async () => {
+        refresh.disabled = true;
+        result.textContent = 'Reading device information from SmartLife…';
+        try {
+          const response = await homebridge.request('/local/refresh', {instanceId: instance.instanceId});
+          if (response.refreshed !== true || response.restartRequired !== true || response.deviceCount !== instance.deviceCount) throw new Error();
+          result.textContent = 'Device information refreshed. Restart the Tuya child bridge to use the updated names.';
+        } catch {
+          result.textContent = 'The refresh could not be confirmed. Check Tuya settings before trying again.';
+        } finally {
+          refresh.disabled = false;
+        }
+      });
+      return card;
     }
 
     function deviceCard(device) {
@@ -94,11 +137,15 @@
     async function loadDevices() {
       document.getElementById('refresh').disabled = true;
       devices.replaceChildren();
+      connections.replaceChildren();
       notice.textContent = 'Loading local devices…';
       try {
         const response = await homebridge.request('/local/devices');
         if (!response || !Array.isArray(response.devices)) throw new Error();
         for (const device of response.devices) devices.appendChild(deviceCard(device));
+        const modes = await homebridge.request('/local/instances');
+        if (!modes || !Array.isArray(modes.instances)) throw new Error();
+        for (const instance of modes.instances) connections.appendChild(connectionCard(instance));
         notice.textContent = response.devices.length ? '' : 'No local devices configured. Add one in Tuya settings, save, then refresh.';
       } catch {
         notice.textContent = 'Local setup is unavailable. Check Tuya settings and Homebridge file permissions.';

@@ -25,7 +25,7 @@ controlled test below is historical evidence, not a successful boost validation.
 
 ## Observed behaviour
 
-The first test thermostat, identified here only by suffix `…cdrjgm`, began in
+The first test thermostat began in
 Scheduled (`smart`) mode at 20°C. The authorized request was 20.5°C for one minute.
 
 | Operation or observation | Result |
@@ -96,7 +96,7 @@ it does not prove compatibility or countdown behaviour on these six devices.
   future local status check, but no key, access token or full device identifier is
   included in this document or exposed to the editor.
 - The initial read-only project request to
-  `GET /v2.0/cloud/timer/device/{device_id}` for `…cdrjgm` returned code `28841101`:
+  `GET /v2.0/cloud/timer/device/{device_id}` for the test thermostat returned code `28841101`:
   “No permissions. This API is not subscribed.” This establishes a project API
   permission limitation, not whether the thermostat supports local schedules.
 - The project initially listed five authorized services without Device Timer.
@@ -112,11 +112,11 @@ it does not prove compatibility or countdown behaviour on these six devices.
   No task was created or modified at that stage. Neither the current public query
   nor the documented legacy query exposes a conclusive module-local capability flag.
 - The legacy `GET /v1.0/devices/{device_id}/timers` query also succeeded for
-  `…cdrjgm` and returned an empty list. These task lists are separate from the
+  the test thermostat and returned an empty list. These task lists are separate from the
   thermostat's native weekly heating programme; empty lists do not mean that
   programme is absent.
 - A seven-day operation-log query for timing events (`type: 10`) succeeded for
-  `…cdrjgm`, returning no logs and `has_next: false`. There is no existing timing
+  the test thermostat, returning no logs and `has_next: false`. There is no existing timing
   event in that response from which to infer execution location. An initial
   command/report query with a mixed raw/standard code filter returned a parameter
   error; removing the code filter and querying `type: 5,7` succeeded and supplied
@@ -176,7 +176,7 @@ does not create a native SDK session or implement `TYSdk.apiRequest`. A second
 Homebridge login would not supply the missing bridge and was not performed.
 [Associated-user login](https://developer.tuya.com/en/docs/cloud/c40fc05907?id=Kawfjj0r2m82l).
 
-Two additional documented metadata reads were attempted for `…cdrjgm`:
+Two additional documented metadata reads were attempted for the test thermostat:
 
 - `GET /v1.0/iot-03/devices/{device_id}/properties` succeeded, returning only
   `embed_sys_env`. Its value was a non-JSON string of length 15; no timer
@@ -306,7 +306,7 @@ to further investigation.
 
 ### Authorized online execution test
 
-The user approved a keypad-lock test lasting up to three minutes on `…cdrjgm`,
+The user approved a keypad-lock test lasting up to three minutes on the test thermostat,
 with a timed unlock, immediate API unlock fallback, and verified cleanup. No
 temperature, programme or network change was authorized or performed.
 
@@ -603,7 +603,7 @@ It does not depend on this chat or browser remaining open.
 
 The deployed GET-only preflight passed. The host job was **armed and its exact
 cron entry verified at 15:57:24.265 UTC on 7 November**. Its marker is
-`fastwarm-boundary-20261107-cdrjgm`; the frozen probe SHA256 is
+`fastwarm-boundary-test`; the frozen probe SHA256 is
 `703ed5442624f775e77b808c9438a287f50e3109e9be1972cfec07b29064d85b`.
 No heating command or native timer was created while arming the host job.
 The scheduler and boundary diagnostics passed 16 and 18 VM scenarios respectively.

@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.7.3-jdipper.13] - (2026.11.18)
+
+### Added
+- Explicit FastWarm local-only operation using vetted saved device metadata and private LAN keys, without automatic Tuya login, discovery, MQTT or token renewal. Unsupported cloud requests are blocked before transmission.
+- An optional **Refresh from SmartLife** action for saved device and room information. Only this explicit action contacts the cloud; it retains credentials privately, changes no heating values and requires a child-bridge restart to adopt refreshed metadata.
+
 ## [2.7.3-jdipper.12] - (2026.11.17)
 
 ### Fixed

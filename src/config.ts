@@ -45,6 +45,8 @@ export interface FastWarmProgrammeGroupConfig {
 
 export interface TuyaPlatformCustomConfigOptions {
   fastWarmLocalDevices?: FastWarmLocalDeviceConfig[];
+  /** Use only vetted local thermostats; no automatic cloud login, discovery or messaging. */
+  fastWarmLocalOnly?: boolean;
   projectType: '1';
   endpoint: string;
   accessId: string;
@@ -66,6 +68,8 @@ export interface TuyaPlatformCustomConfigOptions {
 
 export interface TuyaPlatformHomeConfigOptions {
   fastWarmLocalDevices?: FastWarmLocalDeviceConfig[];
+  /** Use only vetted local thermostats; no automatic cloud login, discovery or messaging. */
+  fastWarmLocalOnly?: boolean;
   projectType: '2';
   endpoint?: string;
   accessId: string;
@@ -105,6 +109,7 @@ export interface TuyaPlatformConfig extends PlatformConfig {
 
 export const customOptionsSchema = {
   properties: {
+    fastWarmLocalOnly: {type: 'boolean'},
     endpoint: { type: 'string', format: 'url', required: true },
     accessId: { type: 'string', required: true },
     accessKey: { type: 'string', required: true },
@@ -116,6 +121,7 @@ export const customOptionsSchema = {
 
 export const homeOptionsSchema = {
   properties: {
+    fastWarmLocalOnly: {type: 'boolean'},
     accessId: { type: 'string', required: true },
     accessKey: { type: 'string', required: true },
     endpoint: { type: 'string', format: 'url' },
@@ -129,6 +135,28 @@ export const homeOptionsSchema = {
     debugLevel: { 'type': 'string' },
   },
 };
+
+/** Reject hidden/inherited flags and getters before validation can read their contents. */
+export function parseFastWarmLocalOnlyOption(options: unknown): boolean {
+  try {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) {
+      throw new Error();
+    }
+    const own = Object.getOwnPropertyDescriptor(options, 'fastWarmLocalOnly');
+    if (!own) {
+      if ('fastWarmLocalOnly' in options) {
+        throw new Error();
+      }
+      return false;
+    }
+    if (!own.enumerable || !Object.hasOwn(own, 'value') || typeof own.value !== 'boolean') {
+      throw new Error();
+    }
+    return own.value;
+  } catch {
+    throw new Error('FastWarm local-only mode must be an explicit boolean configuration option.');
+  }
+}
 
 export interface TuyaPlatformExtraRawSwitchConfig {
   configuredName: string;

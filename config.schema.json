@@ -438,6 +438,12 @@
                         "type": "boolean",
                         "default": false
                     },
+                    "fastWarmLocalOnly": {
+                        "title": "Use local connections only",
+                        "description": "Use saved FastWarm device information and private keys without routine Tuya cloud login, discovery or notifications. Configure every thermostat locally and complete a successful cloud discovery first. Keep cloud credentials for the optional Refresh from SmartLife action on the plugin page. Restart the Tuya child bridge after changing this option.",
+                        "type": "boolean",
+                        "default": false
+                    },
                     "fastWarmLocalDevices": {
                         "title": "FastWarm local connections",
                         "description": "Optional LAN control for verified FastWarm WiFi 2.0 thermostats. Add the device and import its private local key from the Tuya plugin page. Selected devices never fall back to cloud commands.",
@@ -790,6 +796,7 @@
                 "options.weatherAPI",
                 "options.forceIPv4",
                 "options.fastWarmLocalDevices",
+                "options.fastWarmLocalOnly",
                 "options.debug",
                 "options.debugLevel",
                 {

@@ -49,6 +49,25 @@ have not been published to npm.
 
 ## FastWarm LAN control (installed `.12`)
 
+The `.13` local-only follow-up adds an explicit `fastWarmLocalOnly` option.
+With vetted metadata and private keys already present, startup bypasses cloud
+login, discovery and MQTT entirely. A rejecting API preserves the manager
+interface while preventing accidental cloud calls from other accessory paths.
+Normal cloud/mixed behaviour is retained when the option is absent or false.
+The optional **Refresh from SmartLife** UI action uses a separate bounded,
+read-only API session; it updates selected names and room assignments, retains
+vetted schemas and status, meters its HTTP attempts and requires a child-bridge
+restart. It does not change keys or heating values. Failed or incomplete reads
+retain the prior metadata. The action is available for SmartLife Home projects.
+See [local-only operation](fastwarm-local-control.md#explicit-local-only-mode).
+
+The full offline suite passes **879 tests in 47 suites**, including real private
+IPC startup, the cloud-denying API, unchanged mixed-mode paths and explicit
+metadata-refresh failure cases. Build and source lint pass. The deployment
+helpers additionally cover transactional rollback, six retained local selections,
+private key/metadata preservation and complete native verification. Installation
+evidence for the follow-up will be recorded after the live read-only checks.
+
 `feat/fastwarm-lan-control` adds an optional transport inside the existing Tuya
 provider. The initial pilot selected one thermostat; the configuration-only
 rollout on 18 November selected all six FastWarm thermostats. Hive retains its

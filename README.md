@@ -56,6 +56,26 @@ thermostat's own stored schedule continues independently of Homebridge.
 
 See [local transport safeguards and validation](docs/fastwarm-local-control.md).
 
+### Local-only operation
+
+Build `2.7.3-jdipper.13` adds **Use local connections only** under Advanced
+Settings. Enable it after a successful discovery has saved the device information
+and every thermostat you want to use has a LAN address and private key. Restart
+the Tuya child bridge to apply it.
+
+In this mode the plugin starts from saved device information and makes no routine
+Tuya API or MQTT connections. Readings, control and programme verification use
+LAN. Missing device information or a failed local connection stops the affected
+operation without a cloud fallback. Existing cloud configuration is retained for
+provider identity and optional metadata refresh. Unselected cloud devices are
+unavailable in this mode; use the normal mode for a mixed installation.
+
+The plugin page's **Refresh from SmartLife** button explicitly reads updated
+device and room information into the private metadata cache. Restart the Tuya
+child bridge after a successful refresh to use it. Opening the page and refreshing
+the local-device list do not contact Tuya. This mode changes Homebridge's cloud
+use; the thermostats' own SmartLife connections are independent.
+
 ## Shared heating controller
 
 The local `2.7.3-jdipper.10` build separates device integration from household

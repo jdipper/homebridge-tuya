@@ -37,12 +37,12 @@ function instanceIdForPlatform(platform) {
   }
 }
 
-function configuredDevices(configuration, parseDevices) {
+function configuredInstances(configuration, parseDevices) {
   try {
     if (!record(configuration) || !Array.isArray(configuration.platforms)) {
       throw unavailable();
     }
-    const devices = [], instances = new Set();
+    const configured = [], instances = new Set();
     for (const platform of configuration.platforms) {
       if (!record(platform) || platform.platform !== 'TuyaPlatform'
         || platform.plugin !== undefined && platform.plugin !== PLUGIN) {
@@ -50,6 +50,9 @@ function configuredDevices(configuration, parseDevices) {
       }
       if (!record(platform.options)) {
         continue;
+      }
+      if (platform.options.fastWarmLocalOnly !== undefined && typeof platform.options.fastWarmLocalOnly !== 'boolean') {
+        throw unavailable();
       }
       const local = parseDevices(platform.options.fastWarmLocalDevices);
       if (!local.length) {
@@ -60,15 +63,19 @@ function configuredDevices(configuration, parseDevices) {
         throw unavailable();
       }
       instances.add(instanceId);
-      for (const device of local) {
-        devices.push({instanceId, deviceId: device.deviceId, address: device.address,
-          version: device.version, enabled: device.enabled !== false});
-      }
+      configured.push({instanceId, options: platform.options, devices: local.map(device => ({
+        instanceId, deviceId: device.deviceId, address: device.address,
+        version: device.version, enabled: device.enabled !== false,
+      }))});
     }
-    return devices;
+    return configured;
   } catch {
     throw unavailable();
   }
+}
+
+function configuredDevices(configuration, parseDevices) {
+  return configuredInstances(configuration, parseDevices).flatMap(instance => instance.devices);
 }
 
 function contextPaths(context) {
@@ -128,7 +135,8 @@ function createLocalSetupHandlers(context, dependencies) {
   async function selected() {
     const {configPath, persistPath} = contextPaths(context);
     const configuration = await readConfiguration(configPath);
-    return {persistPath, devices: configuredDevices(configuration, helpers().parseFastWarmLocalDevices)};
+    const instances = configuredInstances(configuration, helpers().parseFastWarmLocalDevices);
+    return {persistPath, instances, devices: instances.flatMap(instance => instance.devices)};
   }
   return {
     '/local/devices': async payload => {
@@ -140,6 +148,48 @@ function createLocalSetupHandlers(context, dependencies) {
         return {devices: await Promise.all(devices.map(async device => ({...device,
           keyStored: await new (helpers().FastWarmLanKeyStore)(persistPath, device.instanceId).has(device.deviceId),
         })))};
+      } catch {
+        throw unavailable();
+      }
+    },
+    '/local/instances': async payload => {
+      try {
+        if (payload !== undefined && (!record(payload) || Reflect.ownKeys(payload).length)) {
+          throw unavailable();
+        }
+        const {instances} = await selected();
+        return {instances: instances.map(instance => ({instanceId: instance.instanceId,
+          localOnly: instance.options.fastWarmLocalOnly === true,
+          cloudRefreshAvailable: instance.options.projectType === '2',
+          deviceCount: instance.devices.filter(device => device.enabled).length,
+        }))};
+      } catch {
+        throw unavailable();
+      }
+    },
+    '/local/refresh': async payload => {
+      try {
+        if (!record(payload) || Reflect.ownKeys(payload).join(',') !== 'instanceId'
+          || typeof payload.instanceId !== 'string' || !/^[a-f0-9]{16}$/.test(payload.instanceId)) {
+          throw unavailable();
+        }
+        const {persistPath, instances} = await selected();
+        const matches = instances.filter(instance => instance.instanceId === payload.instanceId);
+        if (matches.length !== 1 || matches[0].options.fastWarmLocalOnly !== true || matches[0].options.projectType !== '2') {
+          throw unavailable();
+        }
+        const deviceIds = matches[0].devices.filter(device => device.enabled).map(device => device.deviceId);
+        if (!deviceIds.length) {
+          throw unavailable();
+        }
+        // This is the sole explicit cloud action. Listing and key storage never load or call it.
+        const refresh = dependencies?.refreshFastWarmCloudMetadata
+          ?? require('../dist/device/lan/FastWarmCloudMetadataRefresh').refreshFastWarmCloudMetadata;
+        const result = await refresh({persistPath, instanceId: payload.instanceId, options: matches[0].options, deviceIds});
+        if (!record(result) || result.refreshed !== true || result.restartRequired !== true || result.deviceCount !== deviceIds.length) {
+          throw unavailable();
+        }
+        return {refreshed: true, restartRequired: true, deviceCount: deviceIds.length};
       } catch {
         throw unavailable();
       }
@@ -187,7 +237,9 @@ async function start() {
   new TuyaLocalSetupUiServer();
 }
 
-module.exports = {ERROR_MESSAGE, instanceIdForPlatform, configuredDevices, readConfiguration, createLocalSetupHandlers};
+module.exports = {
+  ERROR_MESSAGE, instanceIdForPlatform, configuredDevices, configuredInstances, readConfiguration, createLocalSetupHandlers,
+};
 if (require.main === module) {
   start().catch(() => {
     // eslint-disable-next-line no-console -- A fixed startup message contains no request or configuration data.

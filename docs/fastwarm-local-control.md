@@ -65,6 +65,25 @@ Fahrenheit observations are never interpreted as Celsius. The first discovery
 still requires cloud access; a failed cloud startup does not create unknown
 devices or retire cached accessories.
 
+### Explicit local-only mode
+
+`options.fastWarmLocalOnly: true` skips cloud discovery entirely. The platform
+uses the same provider identity, private key store and vetted metadata, creates
+the existing device manager with an API that rejects every cloud request, and
+never starts the cloud MQTT client or its renewal timer. Local availability still
+requires authenticated status; saved metadata cannot establish that a device is
+online. Missing or invalid metadata stops startup without deleting accessories
+or attempting a cloud fallback. Normal cloud and mixed installations retain their
+existing paths when this option is absent or false.
+
+Only the explicit **Refresh from SmartLife** action on the plugin page makes cloud
+requests in this mode. It reads metadata using the configured account, validates
+the existing selected device identities, and saves a complete vetted update.
+Partial failures retain the previous metadata. The action does not start MQTT,
+open another LAN connection, import keys or issue heating commands. A restart
+is required before the running provider uses refreshed metadata. Page loading,
+local-device listing and private key import do not trigger this action.
+
 ## Validation boundaries
 
 The earlier controlled hardware investigation proved status, all 28 native

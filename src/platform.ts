@@ -9,7 +9,7 @@ import TuyaCustomDeviceManager from './device/TuyaCustomDeviceManager';
 import TuyaHomeDeviceManager from './device/TuyaHomeDeviceManager';
 
 import { PLATFORM_NAME, PLUGIN_NAME, THERMOSTAT_PROFILE_UUID_NAMESPACE } from './settings';
-import { TuyaPlatformConfig, customOptionsSchema, homeOptionsSchema } from './config';
+import { TuyaPlatformConfig, customOptionsSchema, homeOptionsSchema, parseFastWarmLocalOnlyOption } from './config';
 import AccessoryFactory from './accessory/AccessoryFactory';
 import BaseAccessory from './accessory/BaseAccessory';
 import { sanitizeName } from './util/util';
@@ -23,6 +23,7 @@ import FastWarmLanController from './device/lan/FastWarmLanController';
 import { FastWarmLanKeyStore, parseFastWarmLocalDevices } from './device/lan/FastWarmLanConfiguration';
 import { readFastWarmLanMetadata, saveFastWarmLanMetadata } from './device/lan/FastWarmLanBootstrap';
 import FastWarmLanBootstrapAPI from './device/lan/FastWarmLanBootstrapAPI';
+import FastWarmLocalOnlyAPI from './device/lan/FastWarmLocalOnlyAPI';
 
 
 /**
@@ -46,13 +47,21 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
   private apiUsageMeter?: TuyaApiUsageMeter;
   private localController?: FastWarmLanController;
   private cloudDiscoveryAvailable = true;
+  private fastWarmLocalOnly = false;
 
   validate() {
     let result;
     if (!this.options) {
       this.log.error('Not configured, exit.');
       return false;
-    } else if (this.options.projectType === '1') {
+    }
+    try {
+      this.fastWarmLocalOnly = parseFastWarmLocalOnlyOption(this.options);
+    } catch {
+      this.log.error('Invalid FastWarm local-only option. Use an explicit boolean value.');
+      return false;
+    }
+    if (this.options.projectType === '1') {
       result = new Validator().validate(this.options, customOptionsSchema);
     } else if (this.options.projectType === '2') {
       result = new Validator().validate(this.options, homeOptionsSchema);
@@ -69,7 +78,11 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
       return false;
     }
     try {
-      parseFastWarmLocalDevices(this.options.fastWarmLocalDevices);
+      const local = parseFastWarmLocalDevices(this.options.fastWarmLocalDevices);
+      if (this.fastWarmLocalOnly && !local.some(device => device.enabled !== false)) {
+        this.log.error('FastWarm local-only mode requires at least one enabled local thermostat.');
+        return false;
+      }
     } catch {
       this.log.error('Invalid FastWarm local connection configuration. Use private IPv4 addresses and protocol 3.5.');
       return false;
@@ -180,21 +193,25 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
   async initDevices() {
 
     let devices: TuyaDevice[] | undefined;
-    try {
-      if (this.options.projectType === '1') {
-        devices = await this.initCustomProject();
-      } else if (this.options.projectType === '2') {
-        devices = await this.initHomeProject();
-      } else {
-        this.log.warn(`Unsupported projectType: ${this.config.options.projectType}.`);
+    if (this.fastWarmLocalOnly) {
+      devices = await this.initLocalOnly();
+    } else {
+      try {
+        if (this.options.projectType === '1') {
+          devices = await this.initCustomProject();
+        } else if (this.options.projectType === '2') {
+          devices = await this.initHomeProject();
+        } else {
+          this.log.warn(`Unsupported projectType: ${this.config.options.projectType}.`);
+        }
+      } catch (error) {
+        if (!this.localDevices().length) {
+          throw error;
+        }
+        this.log.warn('Cloud discovery is unavailable. Checking saved local thermostat metadata.');
       }
-    } catch (error) {
-      if (!this.localDevices().length) {
-        throw error;
-      }
-      this.log.warn('Cloud discovery is unavailable. Checking saved local thermostat metadata.');
     }
-    if (!devices && this.localDevices().length && this.deviceManager) {
+    if (!this.fastWarmLocalOnly && !devices && this.localDevices().length && this.deviceManager) {
       const cached = await readFastWarmLanMetadata(this.api.user.persistPath(), this.programmeInstanceId())
         .catch(() => [] as TuyaDevice[]);
       if (cached.some(device => this.localController?.has(device.id))) {
@@ -245,13 +262,13 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     }
 
     this.log.info(`Got ${devices.length} device(s) and scene(s).`);
-    const file = path.join(this.api.user.persistPath(), `TuyaDeviceList.${this.deviceManager.api.tokenInfo.uid}.json`);
-    this.log.info('Device list saved at %s', file);
-    if (!fs.existsSync(this.api.user.persistPath())) {
-      await fs.promises.mkdir(this.api.user.persistPath());
-    }
     if (this.cloudDiscoveryAvailable) {
+      if (!fs.existsSync(this.api.user.persistPath())) {
+        await fs.promises.mkdir(this.api.user.persistPath());
+      }
+      const file = path.join(this.api.user.persistPath(), `TuyaDeviceList.${this.deviceManager.api.tokenInfo.uid}.json`);
       await writeDeviceCache(file, devices);
+      this.log.info('Device list saved at %s', file);
     }
 
     // add accessories
@@ -260,7 +277,7 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
     }
 
     // add RTSP camera accessories
-    (this.config as TuyaPlatformConfig).cameras?.
+    (!this.fastWarmLocalOnly ? (this.config as TuyaPlatformConfig).cameras : undefined)?.
       filter(cconfig => !devices.map(device => device.id).includes(cconfig.deviceId)).forEach(cconfig => {
         const device = this.deviceManager!.createRTSPCameraDevice(cconfig);
         this.addAccessory(device);
@@ -294,6 +311,34 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
 
   private localDevices() {
     return parseFastWarmLocalDevices(this.options.fastWarmLocalDevices).filter(device => device.enabled !== false);
+  }
+
+  private async initLocalOnly(): Promise<TuyaDevice[] | undefined> {
+    this.cloudDiscoveryAvailable = false;
+    const api = new FastWarmLocalOnlyAPI(this.options.endpoint ?? '', this.options.accessId, this.options.accessKey,
+      'en', false, this.options.forceIPv4);
+    const manager = new TuyaDeviceManager(api);
+    this.deviceManager = manager;
+    let cached: TuyaDevice[];
+    try {
+      cached = await readFastWarmLanMetadata(this.api.user.persistPath(), this.programmeInstanceId());
+    } catch {
+      this.log.error('FastWarm local-only startup metadata is unavailable or invalid. No cloud fallback was attempted.');
+      return;
+    }
+    const selected = this.localDevices();
+    if (!selected.length || selected.some(selection => !cached.some(device => device.id === selection.deviceId
+      && isFastWarmThermostat(device)))) {
+      this.log.error('FastWarm local-only startup requires vetted metadata for every selected thermostat. Restore vetted metadata or use cloud discovery before enabling local-only mode.');
+      return;
+    }
+    const ids = new Set(selected.map(selection => selection.deviceId));
+    const devices = cached.filter(device => ids.has(device.id));
+    manager.devices = devices;
+    manager.ownerIDs = [...new Set(devices.map(device => device.owner_id))];
+    await this.attachLocalController(manager);
+    this.log.info('FastWarm local-only mode: using saved metadata and LAN connections. Automatic cloud access is disabled.');
+    return devices;
   }
 
   private async attachLocalController(manager: TuyaDeviceManager): Promise<void> {
@@ -407,6 +452,9 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
   }
 
   async initCustomProject() {
+    if (this.fastWarmLocalOnly) {
+      return undefined;
+    }
     if (this.options.projectType !== '1') {
       return undefined;
     }
@@ -502,6 +550,9 @@ export class TuyaPlatform implements DynamicPlatformPlugin {
   }
 
   async initHomeProject() {
+    if (this.fastWarmLocalOnly) {
+      return undefined;
+    }
     if (this.options.projectType !== '2') {
       return undefined;
     }
